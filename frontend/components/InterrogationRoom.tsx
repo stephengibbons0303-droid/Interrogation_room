@@ -8,6 +8,8 @@ interface Message {
     content: string;
     agentName?: string;
     emotion?: string;
+    phase?: string;
+    turn?: number;
 }
 
 export default function InterrogationRoom() {
@@ -15,65 +17,70 @@ export default function InterrogationRoom() {
     const [isListening, setIsListening] = useState(false);
     const [inputText, setInputText] = useState("");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
+    const [isWaiting, setIsWaiting] = useState(false);
+    const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
+    const sessionId = useRef(`session-${Date.now()}`);
 
-    // Ref to access the latest function from within the SpeechManager closure
     const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
 
-    // Reset silence timer on any activity
     const resetSilenceTimer = () => {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
-        // Only start timer if WE ARE listening (user's turn)
         if (isListening) {
+            const baseDelay = 4000 + Math.random() * 4000; // 4-8 seconds
+            const variance = (Math.random() * 5000) - 2000;  // -2s to +3s
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
-            }, 10000); // 10 seconds
+            }, baseDelay + variance);
         }
     };
 
     const handleSilenceTrigger = async () => {
-        console.log("Silence trigger activated");
         if (inputText.length > 0) return;
 
         try {
-            // Stop listening if silence triggers
             if (speechManager.current && isListening) {
                 speechManager.current.stopListening();
                 setIsListening(false);
             }
+
+            setIsWaiting(true);
 
             const response = await fetch('http://localhost:8000/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     message: "[SILENCE]",
-                    session_id: "test-session"
+                    session_id: sessionId.current
                 }),
             });
 
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
 
+            if (data.phase) setCurrentPhase(data.phase);
+
             const agentMsg: Message = {
                 role: 'agent',
                 content: data.response || data.text,
                 agentName: data.agent,
-                emotion: data.emotion
+                emotion: data.emotion,
+                phase: data.phase,
+                turn: data.turn
             };
 
             setMessages(prev => [...prev, agentMsg]);
+            setIsWaiting(false);
 
             if (speechManager.current) {
                 const isReynolds = data.agent === 'Reynolds';
                 const voice = isReynolds ? 'Male' : 'Female';
-                const options = isReynolds ? { pitch: 0.7, rate: 1.1 } : { pitch: 1.1, rate: 0.95 };
+                const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
 
                 speechManager.current.speak(agentMsg.content, voice, options, () => {
-                    // Auto-Start listening when agent finishes speaking (Silence response)
-                    console.log("Agent finished (silence), auto-starting mic...");
                     if (speechManager.current) {
                         speechManager.current.startListening();
                         setIsListening(true);
@@ -82,15 +89,14 @@ export default function InterrogationRoom() {
             }
         } catch (error) {
             console.error("Error sending silence trigger:", error);
+            setIsWaiting(false);
         }
     };
 
-    // Main Message Handler
     const handleSendMessage = async (textOverride?: string) => {
         const textToSend = textOverride || inputText;
         if (!textToSend.trim()) return;
 
-        // Auto-Stop listening when user sends message
         if (speechManager.current) {
             speechManager.current.stopListening();
             setIsListening(false);
@@ -99,6 +105,7 @@ export default function InterrogationRoom() {
         const userMsg: Message = { role: 'user', content: textToSend };
         setMessages(prev => [...prev, userMsg]);
         setInputText("");
+        setIsWaiting(true);
 
         try {
             const response = await fetch('http://localhost:8000/chat', {
@@ -106,30 +113,33 @@ export default function InterrogationRoom() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     message: textToSend,
-                    session_id: "test-session"
+                    session_id: sessionId.current
                 }),
             });
 
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
 
+            if (data.phase) setCurrentPhase(data.phase);
+
             const agentMsg: Message = {
                 role: 'agent',
                 content: data.response || data.text,
                 agentName: data.agent,
-                emotion: data.emotion
+                emotion: data.emotion,
+                phase: data.phase,
+                turn: data.turn
             };
 
             setMessages(prev => [...prev, agentMsg]);
+            setIsWaiting(false);
 
             if (speechManager.current) {
                 const isReynolds = data.agent === 'Reynolds';
                 const voice = isReynolds ? 'Male' : 'Female';
-                const options = isReynolds ? { pitch: 0.7, rate: 1.1 } : { pitch: 1.1, rate: 0.95 };
+                const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
 
-                // Auto-Start listening when agent finishes speaking
                 speechManager.current.speak(agentMsg.content, voice, options, () => {
-                    console.log("Agent finished, auto-starting mic...");
                     if (speechManager.current) {
                         speechManager.current.startListening();
                         setIsListening(true);
@@ -139,15 +149,15 @@ export default function InterrogationRoom() {
 
         } catch (error) {
             console.error("Error sending message:", error);
+            setIsWaiting(false);
+            setErrorMsg("Connection to server failed. Is the backend running?");
         }
     };
 
-    // Update ref whenever function changes (though it likely won't change much)
     useEffect(() => {
         handleSendMessageRef.current = handleSendMessage;
     }, [handleSendMessage]);
 
-    // Initialize Speech Manager
     useEffect(() => {
         speechManager.current = new SpeechManager(
             (text) => {
@@ -155,10 +165,7 @@ export default function InterrogationRoom() {
                 setErrorMsg(null);
                 resetSilenceTimer();
 
-                // Auto-Send Logic (Final Result)
                 if (text.trim().length > 0) {
-                    console.log("Transcript received, sending almost immediately:", text);
-                    // 100ms delay to allow state to settle, then send using Ref to avoid stale closures
                     setTimeout(() => {
                         handleSendMessageRef.current(text);
                     }, 100);
@@ -168,14 +175,14 @@ export default function InterrogationRoom() {
                 if (error.startsWith("TTS Error")) {
                     const cleanError = error.replace("TTS Error: ", "");
                     if (cleanError === 'not-allowed' || cleanError === 'canceled') {
-                        setErrorMsg("Auto-play blocked by browser. Please click the 'Play' button on the message.");
+                        setErrorMsg("Audio blocked by browser. Click the speaker icon on a message to play manually.");
                     } else {
-                        setErrorMsg(`Audio Error: ${cleanError}`);
+                        setErrorMsg(`Audio error: ${cleanError}`);
                     }
                 } else {
-                    setErrorMsg(`Microphone Error: ${error}`);
+                    setErrorMsg(`Mic error: ${error}`);
                     if (error === 'network') {
-                        setErrorMsg("Network Error: Speech-to-Text requires an active internet connection (Google servers). Please type your answer.");
+                        setErrorMsg("Speech recognition requires internet. Please type your response.");
                     }
                     setIsListening(false);
                 }
@@ -183,7 +190,12 @@ export default function InterrogationRoom() {
         );
 
         setMessages([
-            { role: 'agent', content: "State your name for the record.", agentName: 'Reynolds', emotion: 'stern' }
+            {
+                role: 'agent',
+                content: "Have a seat. State your full name for the record, please.",
+                agentName: 'Reynolds',
+                emotion: 'measured'
+            }
         ]);
 
         return () => {
@@ -215,74 +227,196 @@ export default function InterrogationRoom() {
         }
     };
 
+    const getAgentColor = (agentName?: string) => {
+        if (agentName === 'Reynolds') return 'var(--amber)';
+        if (agentName === 'Chen') return 'var(--teal)';
+        return 'var(--text-secondary)';
+    };
+
+    const getAgentBorderColor = (agentName?: string) => {
+        if (agentName === 'Reynolds') return 'var(--amber-dim)';
+        if (agentName === 'Chen') return 'var(--teal-dim)';
+        return 'var(--border)';
+    };
+
     return (
-        <div className="flex flex-col h-screen bg-gray-900 text-white font-sans">
+        <div className="flex flex-col h-screen" style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
+            {/* Scanline effect */}
+            <div className="scanline-overlay" />
+
             {/* Header */}
-            <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800">
-                <h1 className="text-xl font-bold tracking-wider text-red-500">INTERROGATION ROOM A</h1>
-                <div className="flex space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-red-600 animate-pulse"></span>
-                    <span className="text-xs text-gray-400">REC</span>
+            <div
+                className="px-5 py-3 flex justify-between items-center"
+                style={{
+                    background: 'var(--surface)',
+                    borderBottom: '1px solid var(--border)'
+                }}
+            >
+                <div className="flex items-center gap-4">
+                    <h1
+                        className="text-sm font-bold tracking-widest font-mono uppercase"
+                        style={{ color: 'var(--teal)' }}
+                    >
+                        Interview Room A
+                    </h1>
+                    <span
+                        className="text-xs font-mono"
+                        style={{ color: 'var(--text-muted)' }}
+                    >
+                        Metropolitan Police — Major Crimes
+                    </span>
+                </div>
+                <div className="flex items-center gap-3">
+                    <span
+                        className="text-xs font-mono px-2 py-0.5 rounded"
+                        style={{
+                            color: 'var(--amber)',
+                            background: 'var(--amber-glow)',
+                            border: '1px solid var(--amber-dim)'
+                        }}
+                    >
+                        {currentPhase}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                        <span
+                            className="w-2 h-2 rounded-full rec-pulse"
+                            style={{ background: 'var(--red-accent)' }}
+                        />
+                        <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                            REC
+                        </span>
+                    </div>
                 </div>
             </div>
 
             {/* Chat Area */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
                 {messages.map((msg, idx) => (
                     <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-2xl p-4 rounded-lg shadow-lg ${msg.role === 'user'
-                            ? 'bg-blue-600 text-white rounded-br-none'
-                            : msg.agentName === 'Reynolds'
-                                ? 'bg-gray-700 text-gray-200 border-l-4 border-red-800 rounded-bl-none'
-                                : 'bg-gray-700 text-gray-200 border-l-4 border-blue-400 rounded-bl-none'
-                            }`}>
-                            {msg.role === 'agent' && (
-                                <div className="flex justify-between items-center mb-1">
-                                    <div className="text-xs font-bold uppercase tracking-wide opacity-70">
-                                        {msg.agentName} <span className="text-gray-500">[{msg.emotion}]</span>
+                        {msg.role === 'user' ? (
+                            <div
+                                className="max-w-2xl px-4 py-3 rounded-lg rounded-br-none"
+                                style={{
+                                    background: 'var(--surface-raised)',
+                                    border: '1px solid var(--border-bright)',
+                                    color: 'var(--text-primary)'
+                                }}
+                            >
+                                <p className="text-base leading-relaxed">{msg.content}</p>
+                            </div>
+                        ) : (
+                            <div
+                                className="max-w-2xl px-4 py-3 rounded-lg rounded-bl-none"
+                                style={{
+                                    background: 'var(--surface)',
+                                    borderLeft: `3px solid ${getAgentBorderColor(msg.agentName)}`,
+                                    borderTop: '1px solid var(--border)',
+                                    borderRight: '1px solid var(--border)',
+                                    borderBottom: '1px solid var(--border)'
+                                }}
+                            >
+                                <div className="flex justify-between items-center mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <span
+                                            className="text-xs font-bold font-mono uppercase tracking-wider"
+                                            style={{ color: getAgentColor(msg.agentName) }}
+                                        >
+                                            {msg.agentName === 'Reynolds' ? 'DI Reynolds' : msg.agentName === 'Chen' ? 'DS Chen' : msg.agentName}
+                                        </span>
+                                        {msg.emotion && (
+                                            <span
+                                                className="text-xs font-mono"
+                                                style={{ color: 'var(--text-muted)' }}
+                                            >
+                                                [{msg.emotion}]
+                                            </span>
+                                        )}
                                     </div>
                                     <button
                                         onClick={() => {
                                             const isReynolds = msg.agentName === 'Reynolds';
                                             const voice = isReynolds ? 'Male' : 'Female';
-                                            const options = isReynolds ? { pitch: 0.7, rate: 1.1 } : { pitch: 1.1, rate: 0.95 };
-                                            // Pass onEnd callback to auto-start mic after manual playback
+                                            const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
                                             speechManager.current?.speak(msg.content, voice, options, () => {
-                                                console.log("Manual playback finished, auto-starting mic...");
                                                 if (speechManager.current) {
                                                     speechManager.current.startListening();
                                                     setIsListening(true);
                                                 }
                                             });
                                         }}
-                                        className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded text-white"
-                                        title="Replay Audio"
+                                        className="text-xs px-2 py-0.5 rounded transition-colors font-mono"
+                                        style={{
+                                            color: 'var(--text-muted)',
+                                            background: 'transparent',
+                                            border: '1px solid var(--border)'
+                                        }}
+                                        title="Replay audio"
                                     >
-                                        🔊 Play
+                                        PLAY
                                     </button>
                                 </div>
-                            )}
-                            <p className="text-lg leading-relaxed">{msg.content}</p>
-                        </div>
+                                <p className="text-base leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                                    {msg.content}
+                                </p>
+                            </div>
+                        )}
                     </div>
                 ))}
+
+                {/* Waiting indicator */}
+                {isWaiting && (
+                    <div className="flex justify-start">
+                        <div
+                            className="px-4 py-3 rounded-lg"
+                            style={{
+                                background: 'var(--surface)',
+                                border: '1px solid var(--border)'
+                            }}
+                        >
+                            <div className="flex items-center gap-1">
+                                <span className="typing-dot" />
+                                <span className="typing-dot" />
+                                <span className="typing-dot" />
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 <div ref={messagesEndRef} />
             </div>
 
             {/* Input Area */}
-            <div className="p-4 bg-gray-800 border-t border-gray-700">
+            <div
+                className="px-5 py-3"
+                style={{
+                    background: 'var(--surface)',
+                    borderTop: '1px solid var(--border)'
+                }}
+            >
                 {errorMsg && (
-                    <div className="mb-2 p-2 bg-red-900 border border-red-500 rounded text-red-100 text-sm text-center">
-                        ⚠️ {errorMsg}
+                    <div
+                        className="mb-2 px-3 py-2 rounded text-sm text-center font-mono"
+                        style={{
+                            background: 'rgba(212, 54, 74, 0.1)',
+                            border: '1px solid var(--red-accent)',
+                            color: 'var(--red-accent)'
+                        }}
+                    >
+                        {errorMsg}
                     </div>
                 )}
-                <div className="flex items-center space-x-2 max-w-4xl mx-auto">
+                <div className="flex items-center gap-2 max-w-4xl mx-auto">
                     <button
                         onClick={toggleListening}
-                        className={`p-4 rounded-full transition-colors ${isListening ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-600 hover:bg-gray-500'
-                            }`}
+                        className="w-11 h-11 rounded-lg flex items-center justify-center transition-all font-mono text-sm"
+                        style={{
+                            background: isListening ? 'rgba(212, 54, 74, 0.15)' : 'var(--surface-raised)',
+                            border: isListening ? '1px solid var(--red-accent)' : '1px solid var(--border-bright)',
+                            color: isListening ? 'var(--red-accent)' : 'var(--text-secondary)'
+                        }}
+                        title={isListening ? "Stop listening" : "Start listening"}
                     >
-                        {isListening ? '🛑' : '🎤'}
+                        {isListening ? 'ON' : 'MIC'}
                     </button>
 
                     <input
@@ -290,13 +424,26 @@ export default function InterrogationRoom() {
                         value={inputText}
                         onChange={(e) => setInputText(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                        className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-blue-500 text-lg"
-                        placeholder="Type or speak your answer..."
+                        className="flex-1 rounded-lg px-4 py-2.5 text-base focus:outline-none font-mono"
+                        style={{
+                            background: 'var(--background)',
+                            border: '1px solid var(--border-bright)',
+                            color: 'var(--text-primary)'
+                        }}
+                        placeholder="Respond..."
+                        disabled={isWaiting}
                     />
 
                     <button
                         onClick={() => handleSendMessage()}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold tracking-wide transition-colors"
+                        disabled={isWaiting || !inputText.trim()}
+                        className="px-5 py-2.5 rounded-lg font-bold text-sm tracking-wider transition-all font-mono"
+                        style={{
+                            background: inputText.trim() ? 'var(--teal-dim)' : 'var(--surface-raised)',
+                            border: `1px solid ${inputText.trim() ? 'var(--teal)' : 'var(--border)'}`,
+                            color: inputText.trim() ? 'var(--teal)' : 'var(--text-muted)',
+                            opacity: isWaiting ? 0.5 : 1
+                        }}
                     >
                         SEND
                     </button>
