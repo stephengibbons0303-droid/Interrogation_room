@@ -1,7 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface Message {
     role: 'user' | 'agent';
@@ -18,6 +20,7 @@ export default function InterrogationRoom() {
     const [inputText, setInputText] = useState("");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
+    const [isSpeaking, setIsSpeaking] = useState(false);
     const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -26,17 +29,59 @@ export default function InterrogationRoom() {
 
     const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
 
-    const resetSilenceTimer = () => {
+    // Fetch TTS audio from backend and play it
+    const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void) => {
+        try {
+            setIsSpeaking(true);
+            const response = await fetch(`${API_URL}/tts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, voice: agentName }),
+            });
+
+            if (!response.ok) {
+                console.warn("TTS endpoint returned", response.status, "- skipping audio");
+                setIsSpeaking(false);
+                if (onEnd) onEnd();
+                return;
+            }
+
+            const audioBlob = await response.blob();
+
+            if (speechManager.current) {
+                speechManager.current.playAudio(audioBlob, () => {
+                    setIsSpeaking(false);
+                    if (onEnd) onEnd();
+                });
+            } else {
+                setIsSpeaking(false);
+                if (onEnd) onEnd();
+            }
+        } catch (error) {
+            console.error("TTS fetch error:", error);
+            setIsSpeaking(false);
+            if (onEnd) onEnd();
+        }
+    }, []);
+
+    const autoStartMic = useCallback(() => {
+        if (speechManager.current) {
+            speechManager.current.startListening();
+            setIsListening(true);
+        }
+    }, []);
+
+    const resetSilenceTimer = useCallback(() => {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
         if (isListening) {
-            const baseDelay = 4000 + Math.random() * 4000; // 4-8 seconds
-            const variance = (Math.random() * 5000) - 2000;  // -2s to +3s
+            const baseDelay = 4000 + Math.random() * 4000;
+            const variance = (Math.random() * 5000) - 2000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
             }, baseDelay + variance);
         }
-    };
+    }, [isListening]);
 
     const handleSilenceTrigger = async () => {
         if (inputText.length > 0) return;
@@ -49,7 +94,7 @@ export default function InterrogationRoom() {
 
             setIsWaiting(true);
 
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat`, {
+            const response = await fetch(`${API_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -75,18 +120,7 @@ export default function InterrogationRoom() {
             setMessages(prev => [...prev, agentMsg]);
             setIsWaiting(false);
 
-            if (speechManager.current) {
-                const isReynolds = data.agent === 'Reynolds';
-                const voice = isReynolds ? 'Male' : 'Female';
-                const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
-
-                speechManager.current.speak(agentMsg.content, voice, options, () => {
-                    if (speechManager.current) {
-                        speechManager.current.startListening();
-                        setIsListening(true);
-                    }
-                });
-            }
+            playAgentAudio(agentMsg.content, data.agent, autoStartMic);
         } catch (error) {
             console.error("Error sending silence trigger:", error);
             setIsWaiting(false);
@@ -99,7 +133,9 @@ export default function InterrogationRoom() {
 
         if (speechManager.current) {
             speechManager.current.stopListening();
+            speechManager.current.stopAudio();
             setIsListening(false);
+            setIsSpeaking(false);
         }
 
         const userMsg: Message = { role: 'user', content: textToSend };
@@ -108,7 +144,7 @@ export default function InterrogationRoom() {
         setIsWaiting(true);
 
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/chat`, {
+            const response = await fetch(`${API_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -134,18 +170,7 @@ export default function InterrogationRoom() {
             setMessages(prev => [...prev, agentMsg]);
             setIsWaiting(false);
 
-            if (speechManager.current) {
-                const isReynolds = data.agent === 'Reynolds';
-                const voice = isReynolds ? 'Male' : 'Female';
-                const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
-
-                speechManager.current.speak(agentMsg.content, voice, options, () => {
-                    if (speechManager.current) {
-                        speechManager.current.startListening();
-                        setIsListening(true);
-                    }
-                });
-            }
+            playAgentAudio(agentMsg.content, data.agent, autoStartMic);
 
         } catch (error) {
             console.error("Error sending message:", error);
@@ -172,13 +197,8 @@ export default function InterrogationRoom() {
                 }
             },
             (error) => {
-                if (error.startsWith("TTS Error")) {
-                    const cleanError = error.replace("TTS Error: ", "");
-                    if (cleanError === 'not-allowed' || cleanError === 'canceled') {
-                        setErrorMsg("Audio blocked by browser. Click the speaker icon on a message to play manually.");
-                    } else {
-                        setErrorMsg(`Audio error: ${cleanError}`);
-                    }
+                if (error.startsWith("Audio")) {
+                    setErrorMsg(error);
                 } else {
                     setErrorMsg(`Mic error: ${error}`);
                     if (error === 'network') {
@@ -189,14 +209,19 @@ export default function InterrogationRoom() {
             }
         );
 
-        setMessages([
-            {
-                role: 'agent',
-                content: "Have a seat. State your full name for the record, please.",
-                agentName: 'Reynolds',
-                emotion: 'measured'
-            }
-        ]);
+        // Opening line — play with TTS
+        const openingMsg: Message = {
+            role: 'agent',
+            content: "Have a seat. State your full name for the record, please.",
+            agentName: 'Reynolds',
+            emotion: 'measured'
+        };
+        setMessages([openingMsg]);
+
+        // Small delay to let the component mount before fetching audio
+        setTimeout(() => {
+            playAgentAudio(openingMsg.content, 'Reynolds');
+        }, 500);
 
         return () => {
             if (silenceTimer.current) clearTimeout(silenceTimer.current);
@@ -334,15 +359,7 @@ export default function InterrogationRoom() {
                                     </div>
                                     <button
                                         onClick={() => {
-                                            const isReynolds = msg.agentName === 'Reynolds';
-                                            const voice = isReynolds ? 'Male' : 'Female';
-                                            const options = isReynolds ? { pitch: 0.7, rate: 1.05 } : { pitch: 1.1, rate: 0.92 };
-                                            speechManager.current?.speak(msg.content, voice, options, () => {
-                                                if (speechManager.current) {
-                                                    speechManager.current.startListening();
-                                                    setIsListening(true);
-                                                }
-                                            });
+                                            playAgentAudio(msg.content, msg.agentName || 'Reynolds');
                                         }}
                                         className="text-xs px-2 py-0.5 rounded transition-colors font-mono"
                                         style={{
@@ -431,18 +448,18 @@ export default function InterrogationRoom() {
                             color: 'var(--text-primary)'
                         }}
                         placeholder="Respond..."
-                        disabled={isWaiting}
+                        disabled={isWaiting || isSpeaking}
                     />
 
                     <button
                         onClick={() => handleSendMessage()}
-                        disabled={isWaiting || !inputText.trim()}
+                        disabled={isWaiting || isSpeaking || !inputText.trim()}
                         className="px-5 py-2.5 rounded-lg font-bold text-sm tracking-wider transition-all font-mono"
                         style={{
                             background: inputText.trim() ? 'var(--teal-dim)' : 'var(--surface-raised)',
                             border: `1px solid ${inputText.trim() ? 'var(--teal)' : 'var(--border)'}`,
                             color: inputText.trim() ? 'var(--teal)' : 'var(--text-muted)',
-                            opacity: isWaiting ? 0.5 : 1
+                            opacity: (isWaiting || isSpeaking) ? 0.5 : 1
                         }}
                     >
                         SEND
