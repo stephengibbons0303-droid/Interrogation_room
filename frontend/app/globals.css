@@ -1,26 +1,96 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #060a0e;
+  --foreground: #c8d6e0;
+  --surface: #0c1218;
+  --surface-raised: #111a22;
+  --border: #1a2a36;
+  --border-bright: #1e3a4a;
+  --teal: #00d4aa;
+  --teal-dim: #00856b;
+  --teal-glow: rgba(0, 212, 170, 0.15);
+  --amber: #e8942e;
+  --amber-dim: #a06820;
+  --amber-glow: rgba(232, 148, 46, 0.12);
+  --red-accent: #d4364a;
+  --text-primary: #c8d6e0;
+  --text-secondary: #6a8899;
+  --text-muted: #3d5566;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
 }
+
+/* Scrollbar styling for the interrogation room */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-bright);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--teal-dim);
+}
+
+/* Pulsing recording indicator */
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.rec-pulse {
+  animation: rec-pulse 1.5s ease-in-out infinite;
+}
+
+/* Subtle scan line effect */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.scanline-overlay {
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(to right, transparent, rgba(0, 212, 170, 0.06), transparent);
+  animation: scanline 8s linear infinite;
+  z-index: 50;
+}
+
+/* Typing indicator animation */
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-4px); }
+}
+
+.typing-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--teal-dim);
+  margin: 0 2px;
+}
+
+.typing-dot:nth-child(1) { animation: dot-bounce 1.2s infinite 0s; }
+.typing-dot:nth-child(2) { animation: dot-bounce 1.2s infinite 0.2s; }
+.typing-dot:nth-child(3) { animation: dot-bounce 1.2s infinite 0.4s; }
