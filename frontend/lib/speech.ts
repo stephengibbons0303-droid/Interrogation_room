@@ -222,6 +222,19 @@ export class SpeechManager {
         const audio = new Audio(url);
         this.currentAudio = audio;
 
+        // Guard: ensure onStart fires exactly once
+        let started = false;
+        const fireStart = () => {
+            if (started) return;
+            started = true;
+            if (onStart) onStart();
+        };
+
+        // Reveal text when audio is actually outputting sound (not just buffering)
+        audio.addEventListener('playing', fireStart, { once: true });
+        // Also reveal on pause — covers interruption via stopAudio()
+        audio.addEventListener('pause', fireStart, { once: true });
+
         audio.onended = () => {
             URL.revokeObjectURL(url);
             this.currentAudio = null;
@@ -233,16 +246,14 @@ export class SpeechManager {
             URL.revokeObjectURL(url);
             this.currentAudio = null;
             if (this.onError) this.onError("Audio playback failed");
-            if (onStart) onStart();
+            fireStart();
             if (onEnd) onEnd();
         };
 
-        audio.play().then(() => {
-            if (onStart) onStart();
-        }).catch((err) => {
+        audio.play().catch((err) => {
             console.error("Audio play() rejected:", err);
             if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
-            if (onStart) onStart();
+            fireStart();
             if (onEnd) onEnd();
         });
     }
