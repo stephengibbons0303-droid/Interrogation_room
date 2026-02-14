@@ -32,7 +32,8 @@ export default function InterrogationRoom() {
     const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
 
     // Fetch TTS audio from backend and play it
-    const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void) => {
+    // onStart fires when audio actually begins playing (for syncing text reveal)
+    const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void, onStart?: () => void) => {
         try {
             setIsSpeaking(true);
             const response = await fetch(`${API_URL}/tts`, {
@@ -44,6 +45,15 @@ export default function InterrogationRoom() {
             if (!response.ok) {
                 console.warn("TTS endpoint returned", response.status, "- skipping audio");
                 setIsSpeaking(false);
+                if (onStart) onStart();
+                if (onEnd) onEnd();
+                return;
+            }
+
+            // If user started recording while TTS was loading, don't play over them
+            if (speechManager.current?.isListening) {
+                setIsSpeaking(false);
+                if (onStart) onStart();
                 if (onEnd) onEnd();
                 return;
             }
@@ -54,14 +64,18 @@ export default function InterrogationRoom() {
                 speechManager.current.playAudio(audioBlob, () => {
                     setIsSpeaking(false);
                     if (onEnd) onEnd();
+                }, () => {
+                    if (onStart) onStart();
                 });
             } else {
                 setIsSpeaking(false);
+                if (onStart) onStart();
                 if (onEnd) onEnd();
             }
         } catch (error) {
             console.error("TTS fetch error:", error);
             setIsSpeaking(false);
+            if (onStart) onStart();
             if (onEnd) onEnd();
         }
     }, []);
@@ -116,10 +130,10 @@ export default function InterrogationRoom() {
                 turn: data.turn
             };
 
-            setMessages(prev => [...prev, agentMsg]);
-            setIsWaiting(false);
-
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic);
+            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
+                setMessages(prev => [...prev, agentMsg]);
+                setIsWaiting(false);
+            });
         } catch (error) {
             console.error("Error sending silence trigger:", error);
             setIsWaiting(false);
@@ -165,10 +179,11 @@ export default function InterrogationRoom() {
                 turn: data.turn
             };
 
-            setMessages(prev => [...prev, agentMsg]);
-            setIsWaiting(false);
-
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic);
+            // Hold text until audio starts playing — keeps eyes and ears in sync
+            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
+                setMessages(prev => [...prev, agentMsg]);
+                setIsWaiting(false);
+            });
 
         } catch (error) {
             console.error("Error sending message:", error);
@@ -226,10 +241,13 @@ export default function InterrogationRoom() {
             agentName: 'Reynolds',
             emotion: 'measured'
         };
-        setMessages([openingMsg]);
+        setIsWaiting(true);
 
         setTimeout(() => {
-            playAgentAudio(openingMsg.content, 'Reynolds');
+            playAgentAudio(openingMsg.content, 'Reynolds', undefined, () => {
+                setMessages([openingMsg]);
+                setIsWaiting(false);
+            });
         }, 300);
     }, [playAgentAudio]);
 
@@ -251,6 +269,8 @@ export default function InterrogationRoom() {
         if (isListening) {
             speechManager.current.stopListening();
         } else {
+            // Allow interrupting AI speech to start recording
+            if (isSpeaking) setIsSpeaking(false);
             speechManager.current.startListening();
         }
     };
@@ -490,11 +510,11 @@ export default function InterrogationRoom() {
                 <div className="flex items-center gap-2 max-w-4xl mx-auto">
                     <button
                         onClick={toggleListening}
-                        disabled={isTranscribing || isWaiting || isSpeaking}
+                        disabled={isTranscribing || isWaiting}
                         className="w-11 h-11 rounded-lg flex items-center justify-center transition-all font-mono text-sm"
                         style={{
                             ...getMicStyle(),
-                            opacity: (isTranscribing || isWaiting || isSpeaking) ? 0.5 : 1
+                            opacity: (isTranscribing || isWaiting) ? 0.5 : 1
                         }}
                         title={isTranscribing ? "Transcribing..." : isListening ? "Stop listening" : "Start listening"}
                     >
