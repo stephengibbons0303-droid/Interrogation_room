@@ -22,6 +22,7 @@ export default function InterrogationRoom() {
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
+    const [hasStarted, setHasStarted] = useState(false);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
@@ -75,11 +76,11 @@ export default function InterrogationRoom() {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
         if (isListening) {
-            const baseDelay = 4000 + Math.random() * 4000;
-            const variance = (Math.random() * 5000) - 2000;
+            // Give much more time: 10-18 seconds before prompting on silence
+            const delay = 10000 + Math.random() * 8000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
-            }, baseDelay + variance);
+            }, delay);
         }
     }, [isListening]);
 
@@ -185,17 +186,16 @@ export default function InterrogationRoom() {
 
     useEffect(() => {
         speechManager.current = new SpeechManager(
+            // onResult — called after 1.5s pause in speech with final transcript
             (text) => {
-                setInputText(text);
+                setInputText("");
                 setErrorMsg(null);
                 resetSilenceTimer();
-
                 if (text.trim().length > 0) {
-                    setTimeout(() => {
-                        handleSendMessageRef.current(text);
-                    }, 100);
+                    handleSendMessageRef.current(text);
                 }
             },
+            // onError
             (error) => {
                 if (error.startsWith("Audio")) {
                     setErrorMsg(error);
@@ -206,10 +206,22 @@ export default function InterrogationRoom() {
                     }
                     setIsListening(false);
                 }
+            },
+            // onInterim — show live transcription as user speaks
+            (interimText) => {
+                setInputText(interimText);
             }
         );
 
-        // Opening line — play with TTS
+        return () => {
+            if (silenceTimer.current) clearTimeout(silenceTimer.current);
+        };
+    }, []);
+
+    // Start the interview after user clicks — this unlocks audio in the browser
+    const startInterview = useCallback(() => {
+        setHasStarted(true);
+
         const openingMsg: Message = {
             role: 'agent',
             content: "Have a seat. State your full name for the record, please.",
@@ -218,15 +230,11 @@ export default function InterrogationRoom() {
         };
         setMessages([openingMsg]);
 
-        // Small delay to let the component mount before fetching audio
+        // Audio will work now because user just clicked (user gesture unlocks autoplay)
         setTimeout(() => {
             playAgentAudio(openingMsg.content, 'Reynolds');
-        }, 500);
-
-        return () => {
-            if (silenceTimer.current) clearTimeout(silenceTimer.current);
-        };
-    }, []);
+        }, 300);
+    }, [playAgentAudio]);
 
     useEffect(() => {
         resetSilenceTimer();
@@ -263,6 +271,43 @@ export default function InterrogationRoom() {
         if (agentName === 'Chen') return 'var(--teal-dim)';
         return 'var(--border)';
     };
+
+    // Pre-interview start screen
+    if (!hasStarted) {
+        return (
+            <div
+                className="flex flex-col h-screen items-center justify-center"
+                style={{ background: 'var(--background)', color: 'var(--text-primary)' }}
+            >
+                <div className="scanline-overlay" />
+                <div className="text-center space-y-6">
+                    <h1
+                        className="text-sm font-bold tracking-widest font-mono uppercase"
+                        style={{ color: 'var(--teal)' }}
+                    >
+                        Interview Room A
+                    </h1>
+                    <p className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                        Metropolitan Police — Major Crimes
+                    </p>
+                    <button
+                        onClick={startInterview}
+                        className="mt-8 px-8 py-3 rounded-lg font-bold text-sm tracking-wider transition-all font-mono uppercase"
+                        style={{
+                            background: 'var(--teal-dim)',
+                            border: '1px solid var(--teal)',
+                            color: 'var(--teal)',
+                        }}
+                    >
+                        Begin Interview
+                    </button>
+                    <p className="text-xs font-mono mt-4" style={{ color: 'var(--text-muted)' }}>
+                        Click to enable audio and microphone
+                    </p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="flex flex-col h-screen" style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
@@ -447,7 +492,7 @@ export default function InterrogationRoom() {
                             border: '1px solid var(--border-bright)',
                             color: 'var(--text-primary)'
                         }}
-                        placeholder="Respond..."
+                        placeholder={isListening ? "Listening..." : "Respond..."}
                         disabled={isWaiting || isSpeaking}
                     />
 
