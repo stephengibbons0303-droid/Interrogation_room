@@ -32,6 +32,9 @@ export class SpeechManager {
     async startListening() {
         if (this.isListening) return;
 
+        // Interrupt any playing AI audio
+        this.stopAudio();
+
         try {
             this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -212,7 +215,7 @@ export class SpeechManager {
         }
     }
 
-    playAudio(audioBlob: Blob, onEnd?: () => void) {
+    playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
         this.stopAudio();
 
         const url = URL.createObjectURL(audioBlob);
@@ -230,12 +233,16 @@ export class SpeechManager {
             URL.revokeObjectURL(url);
             this.currentAudio = null;
             if (this.onError) this.onError("Audio playback failed");
+            if (onStart) onStart();
             if (onEnd) onEnd();
         };
 
-        audio.play().catch((err) => {
+        audio.play().then(() => {
+            if (onStart) onStart();
+        }).catch((err) => {
             console.error("Audio play() rejected:", err);
             if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
+            if (onStart) onStart();
             if (onEnd) onEnd();
         });
     }
