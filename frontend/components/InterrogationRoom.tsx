@@ -17,6 +17,7 @@ interface Message {
 export default function InterrogationRoom() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isListening, setIsListening] = useState(false);
+    const [isTranscribing, setIsTranscribing] = useState(false);
     const [inputText, setInputText] = useState("");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
@@ -68,7 +69,6 @@ export default function InterrogationRoom() {
     const autoStartMic = useCallback(() => {
         if (speechManager.current) {
             speechManager.current.startListening();
-            setIsListening(true);
         }
     }, []);
 
@@ -76,8 +76,7 @@ export default function InterrogationRoom() {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
         if (isListening) {
-            // Give much more time: 10-18 seconds before prompting on silence
-            const delay = 10000 + Math.random() * 8000;
+            const delay = 12000 + Math.random() * 8000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
             }, delay);
@@ -90,7 +89,6 @@ export default function InterrogationRoom() {
         try {
             if (speechManager.current && isListening) {
                 speechManager.current.stopListening();
-                setIsListening(false);
             }
 
             setIsWaiting(true);
@@ -135,7 +133,6 @@ export default function InterrogationRoom() {
         if (speechManager.current) {
             speechManager.current.stopListening();
             speechManager.current.stopAudio();
-            setIsListening(false);
             setIsSpeaking(false);
         }
 
@@ -186,7 +183,7 @@ export default function InterrogationRoom() {
 
     useEffect(() => {
         speechManager.current = new SpeechManager(
-            // onResult — called after 1.5s pause in speech with final transcript
+            // onResult — Whisper transcription complete, auto-send
             (text) => {
                 setInputText("");
                 setErrorMsg(null);
@@ -200,16 +197,17 @@ export default function InterrogationRoom() {
                 if (error.startsWith("Audio")) {
                     setErrorMsg(error);
                 } else {
-                    setErrorMsg(`Mic error: ${error}`);
-                    if (error === 'network') {
-                        setErrorMsg("Speech recognition requires internet. Please type your response.");
-                    }
+                    setErrorMsg(error);
                     setIsListening(false);
                 }
             },
-            // onInterim — show live transcription as user speaks
-            (interimText) => {
-                setInputText(interimText);
+            // onListeningChange — mic state changed
+            (listening) => {
+                setIsListening(listening);
+            },
+            // onTranscribing — Whisper is processing
+            (transcribing) => {
+                setIsTranscribing(transcribing);
             }
         );
 
@@ -230,7 +228,6 @@ export default function InterrogationRoom() {
         };
         setMessages([openingMsg]);
 
-        // Audio will work now because user just clicked (user gesture unlocks autoplay)
         setTimeout(() => {
             playAgentAudio(openingMsg.content, 'Reynolds');
         }, 300);
@@ -253,10 +250,8 @@ export default function InterrogationRoom() {
 
         if (isListening) {
             speechManager.current.stopListening();
-            setIsListening(false);
         } else {
             speechManager.current.startListening();
-            setIsListening(true);
         }
     };
 
@@ -270,6 +265,31 @@ export default function InterrogationRoom() {
         if (agentName === 'Reynolds') return 'var(--amber-dim)';
         if (agentName === 'Chen') return 'var(--teal-dim)';
         return 'var(--border)';
+    };
+
+    // Mic button label
+    const getMicLabel = () => {
+        if (isTranscribing) return '...';
+        if (isListening) return 'ON';
+        return 'MIC';
+    };
+
+    const getMicStyle = () => {
+        if (isTranscribing) return {
+            background: 'rgba(212, 170, 54, 0.15)',
+            border: '1px solid var(--amber)',
+            color: 'var(--amber)'
+        };
+        if (isListening) return {
+            background: 'rgba(212, 54, 74, 0.15)',
+            border: '1px solid var(--red-accent)',
+            color: 'var(--red-accent)'
+        };
+        return {
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border-bright)',
+            color: 'var(--text-secondary)'
+        };
     };
 
     // Pre-interview start screen
@@ -470,15 +490,15 @@ export default function InterrogationRoom() {
                 <div className="flex items-center gap-2 max-w-4xl mx-auto">
                     <button
                         onClick={toggleListening}
+                        disabled={isTranscribing || isWaiting || isSpeaking}
                         className="w-11 h-11 rounded-lg flex items-center justify-center transition-all font-mono text-sm"
                         style={{
-                            background: isListening ? 'rgba(212, 54, 74, 0.15)' : 'var(--surface-raised)',
-                            border: isListening ? '1px solid var(--red-accent)' : '1px solid var(--border-bright)',
-                            color: isListening ? 'var(--red-accent)' : 'var(--text-secondary)'
+                            ...getMicStyle(),
+                            opacity: (isTranscribing || isWaiting || isSpeaking) ? 0.5 : 1
                         }}
-                        title={isListening ? "Stop listening" : "Start listening"}
+                        title={isTranscribing ? "Transcribing..." : isListening ? "Stop listening" : "Start listening"}
                     >
-                        {isListening ? 'ON' : 'MIC'}
+                        {getMicLabel()}
                     </button>
 
                     <input
@@ -492,19 +512,19 @@ export default function InterrogationRoom() {
                             border: '1px solid var(--border-bright)',
                             color: 'var(--text-primary)'
                         }}
-                        placeholder={isListening ? "Listening..." : "Respond..."}
-                        disabled={isWaiting || isSpeaking}
+                        placeholder={isTranscribing ? "Transcribing..." : isListening ? "Recording..." : "Respond..."}
+                        disabled={isWaiting || isSpeaking || isListening}
                     />
 
                     <button
                         onClick={() => handleSendMessage()}
-                        disabled={isWaiting || isSpeaking || !inputText.trim()}
+                        disabled={isWaiting || isSpeaking || !inputText.trim() || isListening}
                         className="px-5 py-2.5 rounded-lg font-bold text-sm tracking-wider transition-all font-mono"
                         style={{
                             background: inputText.trim() ? 'var(--teal-dim)' : 'var(--surface-raised)',
                             border: `1px solid ${inputText.trim() ? 'var(--teal)' : 'var(--border)'}`,
                             color: inputText.trim() ? 'var(--teal)' : 'var(--text-muted)',
-                            opacity: (isWaiting || isSpeaking) ? 0.5 : 1
+                            opacity: (isWaiting || isSpeaking || isListening) ? 0.5 : 1
                         }}
                     >
                         SEND
