@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, HTTPException
+import tempfile
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -23,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OpenAI client for TTS
+# OpenAI client for TTS and STT
 openai_client = None
 if os.getenv("OPENAI_API_KEY"):
     openai_client = OpenAI()
@@ -80,6 +81,44 @@ async def tts_endpoint(request: TTSRequest):
     except Exception as e:
         logger.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail="TTS generation failed")
+
+@app.post("/stt")
+async def stt_endpoint(audio: UploadFile = File(...)):
+    if not openai_client:
+        raise HTTPException(status_code=503, detail="OpenAI API key not configured")
+
+    try:
+        # Write uploaded audio to a temp file (Whisper needs a file-like object with a name)
+        suffix = ".webm"
+        if audio.content_type and "wav" in audio.content_type:
+            suffix = ".wav"
+        elif audio.content_type and "mp4" in audio.content_type:
+            suffix = ".mp4"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            content = await audio.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        with open(tmp_path, "rb") as audio_file:
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="en",
+            )
+
+        os.unlink(tmp_path)
+
+        return {"text": transcript.text}
+
+    except Exception as e:
+        logger.error(f"STT error: {e}")
+        # Clean up temp file on error
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Speech-to-text failed")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))

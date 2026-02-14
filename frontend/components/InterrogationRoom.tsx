@@ -17,11 +17,13 @@ interface Message {
 export default function InterrogationRoom() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isListening, setIsListening] = useState(false);
+    const [isTranscribing, setIsTranscribing] = useState(false);
     const [inputText, setInputText] = useState("");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
+    const [hasStarted, setHasStarted] = useState(false);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
@@ -67,7 +69,6 @@ export default function InterrogationRoom() {
     const autoStartMic = useCallback(() => {
         if (speechManager.current) {
             speechManager.current.startListening();
-            setIsListening(true);
         }
     }, []);
 
@@ -75,11 +76,10 @@ export default function InterrogationRoom() {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
         if (isListening) {
-            const baseDelay = 4000 + Math.random() * 4000;
-            const variance = (Math.random() * 5000) - 2000;
+            const delay = 12000 + Math.random() * 8000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
-            }, baseDelay + variance);
+            }, delay);
         }
     }, [isListening]);
 
@@ -89,7 +89,6 @@ export default function InterrogationRoom() {
         try {
             if (speechManager.current && isListening) {
                 speechManager.current.stopListening();
-                setIsListening(false);
             }
 
             setIsWaiting(true);
@@ -134,7 +133,6 @@ export default function InterrogationRoom() {
         if (speechManager.current) {
             speechManager.current.stopListening();
             speechManager.current.stopAudio();
-            setIsListening(false);
             setIsSpeaking(false);
         }
 
@@ -185,31 +183,43 @@ export default function InterrogationRoom() {
 
     useEffect(() => {
         speechManager.current = new SpeechManager(
+            // onResult — Whisper transcription complete, auto-send
             (text) => {
-                setInputText(text);
+                setInputText("");
                 setErrorMsg(null);
                 resetSilenceTimer();
-
                 if (text.trim().length > 0) {
-                    setTimeout(() => {
-                        handleSendMessageRef.current(text);
-                    }, 100);
+                    handleSendMessageRef.current(text);
                 }
             },
+            // onError
             (error) => {
                 if (error.startsWith("Audio")) {
                     setErrorMsg(error);
                 } else {
-                    setErrorMsg(`Mic error: ${error}`);
-                    if (error === 'network') {
-                        setErrorMsg("Speech recognition requires internet. Please type your response.");
-                    }
+                    setErrorMsg(error);
                     setIsListening(false);
                 }
+            },
+            // onListeningChange — mic state changed
+            (listening) => {
+                setIsListening(listening);
+            },
+            // onTranscribing — Whisper is processing
+            (transcribing) => {
+                setIsTranscribing(transcribing);
             }
         );
 
-        // Opening line — play with TTS
+        return () => {
+            if (silenceTimer.current) clearTimeout(silenceTimer.current);
+        };
+    }, []);
+
+    // Start the interview after user clicks — this unlocks audio in the browser
+    const startInterview = useCallback(() => {
+        setHasStarted(true);
+
         const openingMsg: Message = {
             role: 'agent',
             content: "Have a seat. State your full name for the record, please.",
@@ -218,15 +228,10 @@ export default function InterrogationRoom() {
         };
         setMessages([openingMsg]);
 
-        // Small delay to let the component mount before fetching audio
         setTimeout(() => {
             playAgentAudio(openingMsg.content, 'Reynolds');
-        }, 500);
-
-        return () => {
-            if (silenceTimer.current) clearTimeout(silenceTimer.current);
-        };
-    }, []);
+        }, 300);
+    }, [playAgentAudio]);
 
     useEffect(() => {
         resetSilenceTimer();
@@ -245,10 +250,8 @@ export default function InterrogationRoom() {
 
         if (isListening) {
             speechManager.current.stopListening();
-            setIsListening(false);
         } else {
             speechManager.current.startListening();
-            setIsListening(true);
         }
     };
 
@@ -263,6 +266,68 @@ export default function InterrogationRoom() {
         if (agentName === 'Chen') return 'var(--teal-dim)';
         return 'var(--border)';
     };
+
+    // Mic button label
+    const getMicLabel = () => {
+        if (isTranscribing) return '...';
+        if (isListening) return 'ON';
+        return 'MIC';
+    };
+
+    const getMicStyle = () => {
+        if (isTranscribing) return {
+            background: 'rgba(212, 170, 54, 0.15)',
+            border: '1px solid var(--amber)',
+            color: 'var(--amber)'
+        };
+        if (isListening) return {
+            background: 'rgba(212, 54, 74, 0.15)',
+            border: '1px solid var(--red-accent)',
+            color: 'var(--red-accent)'
+        };
+        return {
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border-bright)',
+            color: 'var(--text-secondary)'
+        };
+    };
+
+    // Pre-interview start screen
+    if (!hasStarted) {
+        return (
+            <div
+                className="flex flex-col h-screen items-center justify-center"
+                style={{ background: 'var(--background)', color: 'var(--text-primary)' }}
+            >
+                <div className="scanline-overlay" />
+                <div className="text-center space-y-6">
+                    <h1
+                        className="text-sm font-bold tracking-widest font-mono uppercase"
+                        style={{ color: 'var(--teal)' }}
+                    >
+                        Interview Room A
+                    </h1>
+                    <p className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                        Metropolitan Police — Major Crimes
+                    </p>
+                    <button
+                        onClick={startInterview}
+                        className="mt-8 px-8 py-3 rounded-lg font-bold text-sm tracking-wider transition-all font-mono uppercase"
+                        style={{
+                            background: 'var(--teal-dim)',
+                            border: '1px solid var(--teal)',
+                            color: 'var(--teal)',
+                        }}
+                    >
+                        Begin Interview
+                    </button>
+                    <p className="text-xs font-mono mt-4" style={{ color: 'var(--text-muted)' }}>
+                        Click to enable audio and microphone
+                    </p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="flex flex-col h-screen" style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
@@ -425,15 +490,15 @@ export default function InterrogationRoom() {
                 <div className="flex items-center gap-2 max-w-4xl mx-auto">
                     <button
                         onClick={toggleListening}
+                        disabled={isTranscribing || isWaiting || isSpeaking}
                         className="w-11 h-11 rounded-lg flex items-center justify-center transition-all font-mono text-sm"
                         style={{
-                            background: isListening ? 'rgba(212, 54, 74, 0.15)' : 'var(--surface-raised)',
-                            border: isListening ? '1px solid var(--red-accent)' : '1px solid var(--border-bright)',
-                            color: isListening ? 'var(--red-accent)' : 'var(--text-secondary)'
+                            ...getMicStyle(),
+                            opacity: (isTranscribing || isWaiting || isSpeaking) ? 0.5 : 1
                         }}
-                        title={isListening ? "Stop listening" : "Start listening"}
+                        title={isTranscribing ? "Transcribing..." : isListening ? "Stop listening" : "Start listening"}
                     >
-                        {isListening ? 'ON' : 'MIC'}
+                        {getMicLabel()}
                     </button>
 
                     <input
@@ -447,19 +512,19 @@ export default function InterrogationRoom() {
                             border: '1px solid var(--border-bright)',
                             color: 'var(--text-primary)'
                         }}
-                        placeholder="Respond..."
-                        disabled={isWaiting || isSpeaking}
+                        placeholder={isTranscribing ? "Transcribing..." : isListening ? "Recording..." : "Respond..."}
+                        disabled={isWaiting || isSpeaking || isListening}
                     />
 
                     <button
                         onClick={() => handleSendMessage()}
-                        disabled={isWaiting || isSpeaking || !inputText.trim()}
+                        disabled={isWaiting || isSpeaking || !inputText.trim() || isListening}
                         className="px-5 py-2.5 rounded-lg font-bold text-sm tracking-wider transition-all font-mono"
                         style={{
                             background: inputText.trim() ? 'var(--teal-dim)' : 'var(--surface-raised)',
                             border: `1px solid ${inputText.trim() ? 'var(--teal)' : 'var(--border)'}`,
                             color: inputText.trim() ? 'var(--teal)' : 'var(--text-muted)',
-                            opacity: (isWaiting || isSpeaking) ? 0.5 : 1
+                            opacity: (isWaiting || isSpeaking || isListening) ? 0.5 : 1
                         }}
                     >
                         SEND
