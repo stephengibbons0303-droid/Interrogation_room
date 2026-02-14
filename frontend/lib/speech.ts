@@ -87,13 +87,24 @@ export class SpeechManager {
 
         let speechDetected = false;
         let silenceStart: number | null = null;
-        const SILENCE_THRESHOLD = 15; // RMS level below which counts as silence
-        const SILENCE_DURATION = 1500; // 1.5s of silence after speech to auto-stop
+        let smoothedRms = 0;
+        const recordingStartTime = Date.now();
+
+        const SILENCE_THRESHOLD = 12;    // RMS level below which counts as silence
+        const SILENCE_DURATION = 2500;   // 2.5s of silence after speech to auto-stop
+        const SMOOTHING = 0.3;           // EMA factor: lower = smoother, less reactive to spikes
+        const MAX_RECORDING_MS = 30000;  // 30s hard cap on any single recording
 
         const dataArray = new Uint8Array(this.analyser.fftSize);
 
         this.silenceCheckInterval = setInterval(() => {
             if (!this.analyser || !this.isListening) return;
+
+            // Hard cap: stop if recording has been going too long
+            if (Date.now() - recordingStartTime > MAX_RECORDING_MS) {
+                this.stopListening();
+                return;
+            }
 
             this.analyser.getByteTimeDomainData(dataArray);
 
@@ -105,7 +116,10 @@ export class SpeechManager {
             }
             const rms = Math.sqrt(sum / dataArray.length) * 100;
 
-            if (rms > SILENCE_THRESHOLD) {
+            // Smooth the RMS to ignore transient noise spikes
+            smoothedRms = SMOOTHING * rms + (1 - SMOOTHING) * smoothedRms;
+
+            if (smoothedRms > SILENCE_THRESHOLD) {
                 speechDetected = true;
                 silenceStart = null;
             } else if (speechDetected) {
@@ -113,7 +127,7 @@ export class SpeechManager {
                 if (!silenceStart) {
                     silenceStart = Date.now();
                 } else if (Date.now() - silenceStart > SILENCE_DURATION) {
-                    // 1.5s of silence after speech — stop and transcribe
+                    // Sustained silence after speech — stop and transcribe
                     this.stopListening();
                 }
             }
