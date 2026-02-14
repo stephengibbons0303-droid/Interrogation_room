@@ -4,14 +4,19 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 
 export async function POST(request: NextRequest) {
     try {
-        const formData = await request.formData();
+        // Forward the raw body with its original content-type (multipart boundary intact)
+        const contentType = request.headers.get('content-type') || '';
+        const body = await request.arrayBuffer();
+
         const response = await fetch(`${BACKEND_URL}/stt`, {
             method: 'POST',
-            body: formData,
+            headers: { 'Content-Type': contentType },
+            body: body,
         });
 
         if (!response.ok) {
             const text = await response.text();
+            console.error('STT backend error:', response.status, text);
             return NextResponse.json(
                 { error: text },
                 { status: response.status }
