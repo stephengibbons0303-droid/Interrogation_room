@@ -1,38 +1,38 @@
 import os
-import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 import logging
+import httpx
 from openai import OpenAI
 from agent import agent_instance
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For prototype, allow all. In prod, lock this down.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# OpenAI client for TTS and STT
+# OpenAI client for TTS
 openai_client = None
 if os.getenv("OPENAI_API_KEY"):
     openai_client = OpenAI()
 
-# Voice mapping: detective name → OpenAI voice
+# Deepgram API key for STT
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+
 VOICE_MAP = {
-    "Reynolds": "onyx",    # Deep, authoritative
-    "Chen": "nova",        # Warm, measured
+    "Reynolds": "onyx",
+    "Chen": "nova",
 }
 
 class ChatRequest(BaseModel):
@@ -41,7 +41,7 @@ class ChatRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str = "onyx"  # Default to Reynolds
+    voice: str = "onyx"
 
 @app.get("/")
 async def root():
@@ -50,9 +50,7 @@ async def root():
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     logger.info(f"Received message: {request.message} from session: {request.session_id}")
-
     response = agent_instance.process_message(request.message)
-
     return response
 
 @app.post("/tts")
@@ -62,62 +60,65 @@ async def tts_endpoint(request: TTSRequest):
 
     voice = VOICE_MAP.get(request.voice, request.voice)
 
-    try:
-        response = openai_client.audio.speech.create(
-            model="tts-1",
-            voice=voice,
-            input=request.text,
-            response_format="mp3",
-        )
+    def stream_audio():
+        try:
+            with openai_client.audio.speech.with_streaming_response.create(
+                model="tts-1",
+                voice=voice,
+                input=request.text,
+                response_format="mp3",
+            ) as response:
+                yield from response.iter_bytes(chunk_size=4096)
+        except Exception as e:
+            logger.error(f"TTS streaming error: {e}")
 
-        audio_bytes = response.content
-
-        return Response(
-            content=audio_bytes,
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": "inline"},
-        )
-
-    except Exception as e:
-        logger.error(f"TTS error: {e}")
-        raise HTTPException(status_code=500, detail="TTS generation failed")
+    return StreamingResponse(
+        stream_audio(),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": "inline"},
+    )
 
 @app.post("/stt")
 async def stt_endpoint(audio: UploadFile = File(...)):
-    if not openai_client:
-        raise HTTPException(status_code=503, detail="OpenAI API key not configured")
+    if not DEEPGRAM_API_KEY:
+        raise HTTPException(status_code=503, detail="Deepgram API key not configured")
 
     try:
-        # Write uploaded audio to a temp file (Whisper needs a file-like object with a name)
-        suffix = ".webm"
-        if audio.content_type and "wav" in audio.content_type:
-            suffix = ".wav"
-        elif audio.content_type and "mp4" in audio.content_type:
-            suffix = ".mp4"
+        content = await audio.read()
+        content_type = audio.content_type or "audio/wav"
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            content = await audio.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        with open(tmp_path, "rb") as audio_file:
-            transcript = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="en",
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.deepgram.com/v1/listen",
+                params={
+                    "model": "nova-2",
+                    "language": "en",
+                    "smart_format": "true",
+                },
+                headers={
+                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                    "Content-Type": content_type,
+                },
+                content=content,
+                timeout=10.0,
             )
 
-        os.unlink(tmp_path)
+        if response.status_code != 200:
+            logger.error(f"Deepgram error: {response.status_code} {response.text}")
+            raise HTTPException(status_code=502, detail="STT provider error")
 
-        return {"text": transcript.text}
+        data = response.json()
+        transcript = data["results"]["channels"][0]["alternatives"][0]["transcript"]
 
+        return {"text": transcript}
+
+    except httpx.TimeoutException:
+        logger.error("Deepgram request timed out")
+        raise HTTPException(status_code=504, detail="STT request timed out")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"STT error: {e}")
-        # Clean up temp file on error
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail="Speech-to-text failed")
 
 if __name__ == "__main__":
