@@ -39,6 +39,9 @@ export class SpeechManager {
                     onSpeechEnd: (audio: Float32Array) => {
                         this.handleSpeechEnd(audio);
                     },
+                    ortConfig: (ort: any) => {
+                        ort.env.wasm.numThreads = 1;
+                    },
                 });
             }
 
@@ -48,7 +51,12 @@ export class SpeechManager {
         } catch (error) {
             console.error('VAD initialization error:', error);
             if (this.onError) {
-                this.onError('Microphone access denied. Please allow microphone access and try again.');
+                const msg = error instanceof Error ? error.message : String(error);
+                if (msg.includes('Permission') || msg.includes('NotAllowed')) {
+                    this.onError('Microphone access denied. Please allow microphone access and try again.');
+                } else {
+                    this.onError(`Voice detection failed: ${msg}`);
+                }
             }
         }
     }
