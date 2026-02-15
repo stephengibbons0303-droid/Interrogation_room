@@ -94,7 +94,7 @@ export class SpeechManager {
         const recordingStartTime = Date.now();
 
         const SPEECH_THRESHOLD = 10;   // RMS must exceed this to confirm speech / reset silence timer
-        const SILENCE_DURATION = 800;  // 0.8s below speech level to auto-stop
+        const SILENCE_DURATION = 1000; // 1.0s below speech level to auto-stop
         const SMOOTHING = 0.6;         // EMA factor: higher = faster response to volume changes
         const MAX_RECORDING_MS = 30000;
 
