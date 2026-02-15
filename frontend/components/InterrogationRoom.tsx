@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
 
-const API_URL = '/api';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 interface Message {
     role: 'user' | 'agent';
@@ -31,12 +31,12 @@ export default function InterrogationRoom() {
 
     const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
 
-    // Fetch TTS audio from backend and play it
+    // Fetch TTS audio from backend and play it via streaming
     // onStart fires when audio actually begins playing (for syncing text reveal)
     const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void, onStart?: () => void) => {
         try {
             setIsSpeaking(true);
-            const response = await fetch(`${API_URL}/tts`, {
+            const response = await fetch(`${BACKEND_URL}/tts`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text, voice: agentName }),
@@ -58,10 +58,8 @@ export default function InterrogationRoom() {
                 return;
             }
 
-            const audioBlob = await response.blob();
-
             if (speechManager.current) {
-                speechManager.current.playAudio(audioBlob, () => {
+                await speechManager.current.playStreamingAudio(response, () => {
                     setIsSpeaking(false);
                     if (onEnd) onEnd();
                 }, () => {
@@ -107,7 +105,7 @@ export default function InterrogationRoom() {
 
             setIsWaiting(true);
 
-            const response = await fetch(`${API_URL}/chat`, {
+            const response = await fetch(`${BACKEND_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -156,7 +154,7 @@ export default function InterrogationRoom() {
         setIsWaiting(true);
 
         try {
-            const response = await fetch(`${API_URL}/chat`, {
+            const response = await fetch(`${BACKEND_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -228,6 +226,7 @@ export default function InterrogationRoom() {
 
         return () => {
             if (silenceTimer.current) clearTimeout(silenceTimer.current);
+            speechManager.current?.destroy();
         };
     }, []);
 
