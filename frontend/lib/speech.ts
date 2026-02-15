@@ -93,17 +93,16 @@ export class SpeechManager {
         let smoothedRms = 0;
         const recordingStartTime = Date.now();
 
-        const SILENCE_THRESHOLD = 12;    // RMS level below which counts as silence
-        const SILENCE_DURATION = 2500;   // 2.5s of silence after speech to auto-stop
-        const SMOOTHING = 0.3;           // EMA factor: lower = smoother, less reactive to spikes
-        const MAX_RECORDING_MS = 30000;  // 30s hard cap on any single recording
+        const SPEECH_THRESHOLD = 15;   // RMS must exceed this to confirm speech / reset silence timer
+        const SILENCE_DURATION = 1200; // 1.2s below speech level to auto-stop
+        const SMOOTHING = 0.5;         // EMA factor: higher = faster response to volume changes
+        const MAX_RECORDING_MS = 30000;
 
         const dataArray = new Uint8Array(this.analyser.fftSize);
 
         this.silenceCheckInterval = setInterval(() => {
             if (!this.analyser || !this.isListening) return;
 
-            // Hard cap: stop if recording has been going too long
             if (Date.now() - recordingStartTime > MAX_RECORDING_MS) {
                 this.stopListening();
                 return;
@@ -111,7 +110,6 @@ export class SpeechManager {
 
             this.analyser.getByteTimeDomainData(dataArray);
 
-            // Calculate RMS volume
             let sum = 0;
             for (let i = 0; i < dataArray.length; i++) {
                 const val = (dataArray[i] - 128) / 128;
@@ -119,18 +117,22 @@ export class SpeechManager {
             }
             const rms = Math.sqrt(sum / dataArray.length) * 100;
 
-            // Smooth the RMS to ignore transient noise spikes
             smoothedRms = SMOOTHING * rms + (1 - SMOOTHING) * smoothedRms;
 
-            if (smoothedRms > SILENCE_THRESHOLD) {
-                speechDetected = true;
-                silenceStart = null;
-            } else if (speechDetected) {
-                // We had speech, now it's quiet
-                if (!silenceStart) {
+            if (!speechDetected) {
+                // Waiting for clear speech to start
+                if (smoothedRms > SPEECH_THRESHOLD) {
+                    speechDetected = true;
+                }
+            } else {
+                // Speech confirmed — monitor for silence
+                if (smoothedRms > SPEECH_THRESHOLD) {
+                    // Still clearly speaking, reset silence timer
+                    silenceStart = null;
+                } else if (!silenceStart) {
                     silenceStart = Date.now();
                 } else if (Date.now() - silenceStart > SILENCE_DURATION) {
-                    // Sustained silence after speech — stop and transcribe
+                    // Sustained drop below speech level — done speaking
                     this.stopListening();
                 }
             }
