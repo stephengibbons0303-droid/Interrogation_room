@@ -61,8 +61,8 @@ export class SpeechManager {
                 this.handleRecordingComplete();
             };
 
-            // Record in 250ms chunks for responsive silence detection
-            this.mediaRecorder.start(250);
+            // Record in 150ms chunks for responsive silence detection
+            this.mediaRecorder.start(150);
             this.isListening = true;
             if (this.onListeningChange) this.onListeningChange(true);
 
@@ -93,9 +93,9 @@ export class SpeechManager {
         let smoothedRms = 0;
         const recordingStartTime = Date.now();
 
-        const SPEECH_THRESHOLD = 15;   // RMS must exceed this to confirm speech / reset silence timer
-        const SILENCE_DURATION = 1200; // 1.2s below speech level to auto-stop
-        const SMOOTHING = 0.5;         // EMA factor: higher = faster response to volume changes
+        const SPEECH_THRESHOLD = 10;   // RMS must exceed this to confirm speech / reset silence timer
+        const SILENCE_DURATION = 800;  // 0.8s below speech level to auto-stop
+        const SMOOTHING = 0.6;         // EMA factor: higher = faster response to volume changes
         const MAX_RECORDING_MS = 30000;
 
         const dataArray = new Uint8Array(this.analyser.fftSize);
