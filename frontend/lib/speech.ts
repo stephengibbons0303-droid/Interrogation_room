@@ -2,6 +2,8 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 
 export class SpeechManager {
     private vad: any = null;
+    private micStream: MediaStream | null = null;
+    private vadReady: Promise<void> | null = null;
     private currentAudio: HTMLAudioElement | null = null;
     isListening: boolean = false;
     isTranscribing: boolean = false;
@@ -25,6 +27,21 @@ export class SpeechManager {
 
     // Cached MicVAD constructor loaded from CDN (shared across all instances).
     private static _MicVAD: any = null;
+
+    /** Fire-and-forget: start loading the CDN bundle on mount so it's ready before first click. */
+    static preload(): void {
+        SpeechManager.loadMicVAD().catch(() => {});
+    }
+
+    /**
+     * Acquire the mic MediaStream. Must be called within a browser user-gesture
+     * (e.g. a click handler) for the first invocation. Subsequent calls are
+     * no-ops — the stream is reused so permission is only requested once.
+     */
+    async acquireMicStream(): Promise<void> {
+        if (this.micStream) return;
+        this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
 
     private static async loadMicVAD(): Promise<any> {
         if (SpeechManager._MicVAD) return SpeechManager._MicVAD;
@@ -50,34 +67,42 @@ export class SpeechManager {
         return MicVAD;
     }
 
+    private async _initVAD(): Promise<void> {
+        const MicVAD = await SpeechManager.loadMicVAD();
+        this.vad = await (MicVAD.new as any)({
+            stream: this.micStream,       // pre-acquired — skips internal getUserMedia
+            positiveSpeechThreshold: 0.5,
+            negativeSpeechThreshold: 0.35,
+            minSpeechMs: 250,
+            redemptionMs: 500,
+            preSpeechPadMs: 300,
+            // Worklet and WASM served from CDN; model resolves relative to worklet.
+            workletURL: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/vad.worklet.bundle.min.js',
+            ortConfig: (ort: any) => {
+                ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/';
+                ort.env.wasm.numThreads = 1;
+            },
+            onSpeechEnd: (audio: Float32Array) => {
+                this.handleSpeechEnd(audio);
+            },
+        });
+    }
+
     async startListening() {
         if (this.isListening) return;
         this.stopAudio();
 
         try {
+            // Phase 1 — must run within a user gesture for the first call.
+            // acquireMicStream() is a no-op on subsequent calls (stream cached).
+            await this.acquireMicStream();
+
+            // Phase 2 — async VAD init; gesture context not required because
+            // the MediaStream was already acquired above.
             if (!this.vad) {
-                const MicVAD = await SpeechManager.loadMicVAD();
-                const vadConfig: any = {
-                    positiveSpeechThreshold: 0.5,
-                    negativeSpeechThreshold: 0.35,
-                    minSpeechMs: 250,
-                    redemptionMs: 500,
-                    preSpeechPadMs: 300,
-                    // Worklet served from CDN; model URL resolves relative to
-                    // the worklet, so silero_vad_legacy.onnx is found on CDN too.
-                    workletURL: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/vad.worklet.bundle.min.js',
-                    ortConfig: (ort: any) => {
-                        // Point ort at CDN-hosted WASM — no local copies needed.
-                        // numThreads=1 uses the single-threaded build so
-                        // SharedArrayBuffer (and COEP) is not required.
-                        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/';
-                        ort.env.wasm.numThreads = 1;
-                    },
-                    onSpeechEnd: (audio: Float32Array) => {
-                        this.handleSpeechEnd(audio);
-                    },
-                };
-                this.vad = await MicVAD.new(vadConfig);
+                if (!this.vadReady) this.vadReady = this._initVAD();
+                await this.vadReady;
+                this.vadReady = null;
             }
 
             this.vad.start();
@@ -287,6 +312,10 @@ export class SpeechManager {
         if (this.vad) {
             this.vad.destroy();
             this.vad = null;
+        }
+        if (this.micStream) {
+            this.micStream.getTracks().forEach(t => t.stop());
+            this.micStream = null;
         }
     }
 }
