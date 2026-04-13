@@ -48,7 +48,14 @@ export class SpeechManager {
         } catch (error) {
             console.error('VAD initialization error:', error);
             if (this.onError) {
-                this.onError('Microphone access denied. Please allow microphone access and try again.');
+                const isPermissionError =
+                    error instanceof DOMException &&
+                    (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError');
+                this.onError(
+                    isPermissionError
+                        ? 'Microphone access denied. Please allow microphone access and try again.'
+                        : 'Microphone could not be started. Please check browser permissions and reload.'
+                );
             }
         }
     }
