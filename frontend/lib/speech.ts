@@ -36,6 +36,17 @@ export class SpeechManager {
                     minSpeechMs: 250,
                     redemptionMs: 500,
                     preSpeechPadMs: 300,
+                    // Explicit paths so the library can find its static assets
+                    // after they have been copied to public/ by the prebuild script.
+                    workletURL: '/vad.worklet.bundle.min.js',
+                    modelURL: '/silero_vad.onnx',
+                    ortConfig: (ort: any) => {
+                        // Serve WASM binaries from the app root (public/).
+                        // numThreads=1 uses the single-threaded WASM build so
+                        // SharedArrayBuffer (and COEP) is not required.
+                        ort.env.wasm.wasmPaths = '/';
+                        ort.env.wasm.numThreads = 1;
+                    },
                     onSpeechEnd: (audio: Float32Array) => {
                         this.handleSpeechEnd(audio);
                     },
