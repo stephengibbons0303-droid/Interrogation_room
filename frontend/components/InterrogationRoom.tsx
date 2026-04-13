@@ -224,6 +224,9 @@ export default function InterrogationRoom() {
             }
         );
 
+        // Pre-fetch the CDN bundle so it's cached before the user clicks MIC.
+        SpeechManager.preload();
+
         return () => {
             if (silenceTimer.current) clearTimeout(silenceTimer.current);
             speechManager.current?.destroy();
@@ -262,7 +265,7 @@ export default function InterrogationRoom() {
         scrollToBottom();
     }, [messages]);
 
-    const toggleListening = () => {
+    const toggleListening = async () => {
         if (!speechManager.current) return;
 
         if (isListening) {
@@ -270,6 +273,9 @@ export default function InterrogationRoom() {
         } else {
             // Allow interrupting AI speech to start recording
             if (isSpeaking) setIsSpeaking(false);
+            // acquireMicStream() MUST be awaited here, inside the click handler,
+            // so getUserMedia() fires while the browser gesture context is still valid.
+            await speechManager.current.acquireMicStream();
             speechManager.current.startListening();
         }
     };
