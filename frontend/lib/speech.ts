@@ -30,27 +30,29 @@ export class SpeechManager {
         try {
             if (!this.vad) {
                 const { MicVAD } = await import("@ricky0123/vad-web");
-                this.vad = await MicVAD.new({
+                // Options are cast to `any` because workletURL / ortConfig are
+                // valid runtime options but not present in the v0.0.30 typedefs.
+                const vadConfig: any = {
                     positiveSpeechThreshold: 0.5,
                     negativeSpeechThreshold: 0.35,
                     minSpeechMs: 250,
                     redemptionMs: 500,
                     preSpeechPadMs: 300,
-                    // Explicit paths so the library can find its static assets
-                    // after they have been copied to public/ by the prebuild script.
+                    // Point the library at the static assets copied to public/
+                    // by the prebuild script (scripts/copy-vad-assets.js).
                     workletURL: '/vad.worklet.bundle.min.js',
                     modelURL: '/silero_vad.onnx',
                     ortConfig: (ort: any) => {
-                        // Serve WASM binaries from the app root (public/).
-                        // numThreads=1 uses the single-threaded WASM build so
-                        // SharedArrayBuffer (and COEP) is not required.
+                        // WASM binaries are served from the app root (public/).
+                        // numThreads=1 → single-threaded build, no SharedArrayBuffer needed.
                         ort.env.wasm.wasmPaths = '/';
                         ort.env.wasm.numThreads = 1;
                     },
                     onSpeechEnd: (audio: Float32Array) => {
                         this.handleSpeechEnd(audio);
                     },
-                });
+                };
+                this.vad = await MicVAD.new(vadConfig);
             }
 
             this.vad.start();
