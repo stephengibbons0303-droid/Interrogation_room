@@ -64,10 +64,14 @@ if (onnxSrc) {
   );
 }
 
-// ── 3. ONNX Runtime WASM binaries ────────────────────────────────────────────
+// ── 3. ONNX Runtime WASM binaries + .mjs backend wrappers ───────────────────
+// ort.min.js dynamically imports `.mjs` ES-module wrappers (e.g.
+// `ort-wasm-simd-threaded.mjs`) at runtime — they must be co-located with
+// the `.wasm` files or ORT fails with "Failed to fetch dynamically imported
+// module" before it can instantiate any backend.
 if (fs.existsSync(ortDist)) {
   for (const file of fs.readdirSync(ortDist)) {
-    if (file.endsWith(".wasm")) {
+    if (file.endsWith(".wasm") || file.endsWith(".mjs")) {
       cp(path.join(ortDist, file), file);
     }
   }
