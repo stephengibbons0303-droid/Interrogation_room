@@ -51,16 +51,16 @@ cp(
 );
 
 // ── 2. Silero VAD ONNX model ──────────────────────────────────────────────────
-// The model file is not always at a fixed path in the npm package —
-// search the whole package directory for any .onnx file.
+// The library requests the model as 'silero_vad_legacy.onnx'. Search the
+// entire package directory for any .onnx file and save it under that name.
 const onnxSrc = findFirst(vadRoot, (name) => name.endsWith(".onnx"));
 if (onnxSrc) {
-  fs.copyFileSync(onnxSrc, path.join(publicDir, "silero_vad.onnx"));
-  console.log(`[copy-vad-assets] Copied silero_vad.onnx (from ${path.relative(root, onnxSrc)})`);
+  fs.copyFileSync(onnxSrc, path.join(publicDir, "silero_vad_legacy.onnx"));
+  console.log(`[copy-vad-assets] Copied silero_vad_legacy.onnx (from ${path.relative(root, onnxSrc)})`);
 } else {
   console.warn(
-    "[copy-vad-assets] Warning: silero_vad.onnx not found in the package. " +
-    "The library will attempt to fetch the model from its default CDN URL."
+    "[copy-vad-assets] Warning: no .onnx model found in @ricky0123/vad-web. " +
+    "VAD will fail to initialize — ensure the package includes the model file."
   );
 }
 

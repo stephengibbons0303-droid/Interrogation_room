@@ -25,10 +25,10 @@ export class SpeechManager {
         this.onTranscribing = onTranscribing;
     }
 
-    // Cached MicVAD constructor loaded from CDN (shared across all instances).
+    // Cached MicVAD constructor — loaded lazily on first use.
     private static _MicVAD: any = null;
 
-    /** Fire-and-forget: start loading the CDN bundle on mount so it's ready before first click. */
+    /** Fire-and-forget: warm up the dynamic import on mount so it's ready before first click. */
     static preload(): void {
         SpeechManager.loadMicVAD().catch(() => {});
     }
@@ -45,24 +45,10 @@ export class SpeechManager {
 
     private static async loadMicVAD(): Promise<any> {
         if (SpeechManager._MicVAD) return SpeechManager._MicVAD;
-
-        // Load the pre-built UMD bundle from CDN instead of importing through
-        // the Next.js bundler. Turbopack (used by Next.js 16 in production)
-        // creates a broken WASM module chunk for onnxruntime-web that 404s at
-        // runtime. Loading via <script> bypasses bundling entirely.
-        await new Promise<void>((resolve, reject) => {
-            if (document.querySelector('[data-vad-cdn]')) { resolve(); return; }
-            const s = document.createElement('script');
-            s.setAttribute('data-vad-cdn', '1');
-            s.src = 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/bundle.min.js';
-            s.crossOrigin = 'anonymous';
-            s.onload = () => resolve();
-            s.onerror = () => reject(new Error('Failed to load @ricky0123/vad-web from CDN'));
-            document.head.appendChild(s);
-        });
-
-        const MicVAD = (window as any).vad?.MicVAD;
-        if (!MicVAD) throw new Error('window.vad.MicVAD not found after loading CDN bundle');
+        // next.config.ts resolveAlias redirects onnxruntime-web → ort.min.js so
+        // Turbopack bundles a single pre-built UMD file instead of creating
+        // dynamic .mjs WASM-backend chunks that 404 in production.
+        const { MicVAD } = await import("@ricky0123/vad-web");
         SpeechManager._MicVAD = MicVAD;
         return MicVAD;
     }
@@ -70,16 +56,19 @@ export class SpeechManager {
     private async _initVAD(): Promise<void> {
         const MicVAD = await SpeechManager.loadMicVAD();
         this.vad = await (MicVAD.new as any)({
-            stream: this.micStream,       // pre-acquired — skips internal getUserMedia
+            stream: this.micStream,   // pre-acquired — skips internal getUserMedia
             positiveSpeechThreshold: 0.5,
             negativeSpeechThreshold: 0.35,
             minSpeechMs: 250,
             redemptionMs: 500,
             preSpeechPadMs: 300,
-            // Worklet and WASM served from CDN; model resolves relative to worklet.
-            workletURL: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/vad.worklet.bundle.min.js',
+            // Assets served from public/ (copied by prebuild script).
+            workletURL: '/vad.worklet.bundle.min.js',
+            modelURL: '/silero_vad_legacy.onnx',
             ortConfig: (ort: any) => {
-                ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/';
+                // WASM binaries served from public/; numThreads=1 avoids
+                // SharedArrayBuffer so COEP is not required.
+                ort.env.wasm.wasmPaths = '/';
                 ort.env.wasm.numThreads = 1;
             },
             onSpeechEnd: (audio: Float32Array) => {
