@@ -13,8 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import (Column, DateTime, ForeignKey, Integer, String, Text,
-                        create_engine)
+from sqlalchemy import (JSON, Column, DateTime, Float, ForeignKey, Integer,
+                        String, Text, create_engine, inspect, text)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -78,14 +78,29 @@ class Interview(Base):
     turn_count = Column(Integer, nullable=False, default=0)
     player_name = Column(String(255), nullable=True)
     last_agent = Column(String(50), nullable=False, default="Reynolds")
-    phase = Column(String(50), nullable=False, default="ORIENTATION")
-    escalation_score = Column(Integer, nullable=False, default=0)
-    contradiction_count = Column(Integer, nullable=False, default=0)
+    phase = Column(String(50), nullable=False, default="engage")
+
+    # The whole engine state as JSON - pressure, stage, claims, contradictions,
+    # evidence disclosure, cooldowns, Chen's stance. See engine/state.py.
+    # A blob rather than columns because the shape will keep moving while the
+    # engine is tuned, and none of it is queried across interviews.
+    engine_state = Column(JSON, nullable=True)
+
+    # Which secret brief this learner was dealt. Denormalised out of
+    # engine_state so a session can be picked out by brief without parsing JSON.
+    brief_id = Column(String(64), nullable=True)
+    outcome = Column(String(32), nullable=True)
+
+    # NOTE: escalation_score / contradiction_count are gone. They were written
+    # and never read. Pressure and the contradiction ledger now live in
+    # engine_state and actually drive behaviour.
 
     user = relationship("User", back_populates="interviews")
     turns = relationship("Turn", back_populates="interview",
                          cascade="all, delete-orphan",
                          order_by="Turn.seq")
+    claims = relationship("Claim", back_populates="interview",
+                          cascade="all, delete-orphan")
 
 
 class Turn(Base):
@@ -113,6 +128,19 @@ class Turn(Base):
     # spoken | typed  (learner turns) · synthesised (detective turns)
     modality = Column(String(20), nullable=True)
 
+    # Who the line was aimed at. Detectives conferring in front of the learner
+    # ("partner") is a different listening skill from being spoken to directly
+    # ("learner"): overheard native dialogue is not simplified for the listener.
+    # The assessment needs to credit those separately, and it cannot be
+    # reconstructed after the fact.
+    addressed_to = Column(String(20), nullable=True, default="learner")
+    # Groups the two utterances of an aside into one exchange while keeping each
+    # separately analysable.
+    exchange_id = Column(String(36), nullable=True, index=True)
+
+    # Which tactic produced this line, for tuning and post-session review.
+    tactic = Column(String(50), nullable=True)
+
     phase = Column(String(50), nullable=True)
     turn_number = Column(Integer, nullable=True)
     emotion = Column(String(50), nullable=True)
@@ -121,8 +149,72 @@ class Turn(Base):
     interview = relationship("Interview", back_populates="turns")
 
 
+class Claim(Base):
+    """A statement the learner committed to, in structured form.
+
+    Mirrors engine.state.Claim, persisted separately from engine_state because
+    this is the table the post-session KLP assessment will read: one row per
+    committed fact, tied to the turn that produced it.
+    """
+    __tablename__ = "claims"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    interview_id = Column(String(36), ForeignKey("interviews.id"),
+                          nullable=False, index=True)
+    turn_seq = Column(Integer, nullable=False)
+
+    text = Column(Text, nullable=False)
+    start_min = Column(Integer, nullable=True)      # minutes past midnight
+    end_min = Column(Integer, nullable=True)
+    location = Column(String(64), nullable=True)
+    activity = Column(String(255), nullable=True)
+
+    superseded_by = Column(String(36), nullable=True)
+    vouched_by_chen = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=_now)
+
+    interview = relationship("Interview", back_populates="claims")
+
+
+# Columns added after the first release. create_all() creates missing *tables*
+# but never alters existing ones, so without this an upgraded install keeps the
+# old table shape and fails at runtime with a confusing "no such column".
+_ADDED_COLUMNS = {
+    "interviews": {
+        "engine_state": "JSON",
+        "brief_id": "VARCHAR(64)",
+        "outcome": "VARCHAR(32)",
+    },
+    "turns": {
+        "addressed_to": "VARCHAR(20)",
+        "exchange_id": "VARCHAR(36)",
+        "tactic": "VARCHAR(50)",
+    },
+}
+
+
+def _ensure_columns() -> None:
+    """Add any missing columns in place. Idempotent, and safe to run at boot.
+
+    Deliberately additive only: nothing is dropped or rewritten, so an existing
+    local database keeps its accounts and transcripts.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            if table not in existing_tables:
+                continue                       # create_all will build it fresh
+            present = {c["name"] for c in inspector.get_columns(table)}
+            for name, ddl_type in columns.items():
+                if name not in present:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
+                    print(f"  db: added {table}.{name}")
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
 
 
 def get_db():
