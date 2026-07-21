@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
+import { getInterview, sendMessage, type Modality } from '../lib/api';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 
@@ -14,7 +15,15 @@ interface Message {
     turn?: number;
 }
 
-export default function InterrogationRoom() {
+interface Props {
+    interviewId: string;
+    /** Resuming an existing interview replays its transcript instead of
+     *  opening with the standard first line. */
+    resume: boolean;
+    onExit: () => void;
+}
+
+export default function InterrogationRoom({ interviewId, resume, onExit }: Props) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isListening, setIsListening] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
@@ -27,9 +36,8 @@ export default function InterrogationRoom() {
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
-    const sessionId = useRef(`session-${Date.now()}`);
 
-    const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
+    const handleSendMessageRef = useRef<(text?: string, modality?: Modality) => Promise<void>>(async () => { });
 
     // Fetch TTS audio from backend and play it via streaming
     // onStart fires when audio actually begins playing (for syncing text reveal)
@@ -105,25 +113,17 @@ export default function InterrogationRoom() {
 
             setIsWaiting(true);
 
-            const response = await fetch(`${BACKEND_URL}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: "[SILENCE]",
-                    session_id: sessionId.current
-                }),
-            });
-
-            if (!response.ok) throw new Error('Network response was not ok');
-            const data = await response.json();
+            // Logged as 'silence' rather than a learner utterance so the
+            // post-session assessment does not read it as production.
+            const data = await sendMessage(interviewId, "[SILENCE]", 'silence');
 
             if (data.phase) setCurrentPhase(data.phase);
 
             const agentMsg: Message = {
                 role: 'agent',
-                content: data.response || data.text,
+                content: data.text,
                 agentName: data.agent,
-                emotion: data.emotion,
+                emotion: data.emotion ?? undefined,
                 phase: data.phase,
                 turn: data.turn
             };
@@ -138,7 +138,7 @@ export default function InterrogationRoom() {
         }
     };
 
-    const handleSendMessage = async (textOverride?: string) => {
+    const handleSendMessage = async (textOverride?: string, modality: Modality = 'typed') => {
         const textToSend = textOverride || inputText;
         if (!textToSend.trim()) return;
 
@@ -154,25 +154,15 @@ export default function InterrogationRoom() {
         setIsWaiting(true);
 
         try {
-            const response = await fetch(`${BACKEND_URL}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: textToSend,
-                    session_id: sessionId.current
-                }),
-            });
-
-            if (!response.ok) throw new Error('Network response was not ok');
-            const data = await response.json();
+            const data = await sendMessage(interviewId, textToSend, modality);
 
             if (data.phase) setCurrentPhase(data.phase);
 
             const agentMsg: Message = {
                 role: 'agent',
-                content: data.response || data.text,
+                content: data.text,
                 agentName: data.agent,
-                emotion: data.emotion,
+                emotion: data.emotion ?? undefined,
                 phase: data.phase,
                 turn: data.turn
             };
@@ -202,7 +192,9 @@ export default function InterrogationRoom() {
                 setErrorMsg(null);
                 resetSilenceTimer();
                 if (text.trim().length > 0) {
-                    handleSendMessageRef.current(text);
+                    // Came back from Whisper, so this turn was spoken. That
+                    // distinction is what earns speaking credit later.
+                    handleSendMessageRef.current(text, 'spoken');
                 }
             },
             // onError
@@ -234,8 +226,30 @@ export default function InterrogationRoom() {
     }, []);
 
     // Start the interview after user clicks — this unlocks audio in the browser
-    const startInterview = useCallback(() => {
+    const startInterview = useCallback(async () => {
         setHasStarted(true);
+
+        if (resume) {
+            // Replay what was already said rather than reopening. No audio:
+            // the learner is picking up a thread, not being greeted again.
+            setIsWaiting(true);
+            try {
+                const detail = await getInterview(interviewId);
+                setMessages(detail.turns.map((t) => ({
+                    role: t.role === 'user' ? 'user' : 'agent',
+                    content: t.text,
+                    agentName: t.agent_name ?? undefined,
+                    emotion: t.emotion ?? undefined,
+                    phase: t.phase ?? undefined,
+                })));
+                if (detail.phase) setCurrentPhase(detail.phase);
+            } catch {
+                setErrorMsg("Could not load this interview.");
+            } finally {
+                setIsWaiting(false);
+            }
+            return;
+        }
 
         const openingMsg: Message = {
             role: 'agent',
@@ -251,7 +265,7 @@ export default function InterrogationRoom() {
                 setIsWaiting(false);
             });
         }, 300);
-    }, [playAgentAudio]);
+    }, [playAgentAudio, resume, interviewId]);
 
     useEffect(() => {
         resetSilenceTimer();
@@ -344,11 +358,18 @@ export default function InterrogationRoom() {
                             color: 'var(--teal)',
                         }}
                     >
-                        Begin Interview
+                        {resume ? 'Resume Interview' : 'Begin Interview'}
                     </button>
                     <p className="text-xs font-mono mt-4" style={{ color: 'var(--text-muted)' }}>
                         Click to enable audio and microphone
                     </p>
+                    <button
+                        onClick={onExit}
+                        className="block mx-auto text-xs font-mono mt-2"
+                        style={{ color: 'var(--text-muted)' }}
+                    >
+                        ← Back to interviews
+                    </button>
                 </div>
             </div>
         );
@@ -368,6 +389,14 @@ export default function InterrogationRoom() {
                 }}
             >
                 <div className="flex items-center gap-4">
+                    <button
+                        onClick={onExit}
+                        title="Back to interviews — this interview is saved"
+                        className="text-xs font-mono px-2 py-1 rounded"
+                        style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                    >
+                        ←
+                    </button>
                     <h1
                         className="text-sm font-bold tracking-widest font-mono uppercase"
                         style={{ color: 'var(--teal)' }}
