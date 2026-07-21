@@ -16,12 +16,17 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 // long silence before they begin costs them nothing.
 const SILENCE_MS = 2500;
 
-// Backstop against a stuck or open mic in a noisy room, where the detector may
-// never see silence. Deliberately more generous than SAIF's 25s: their RMS
-// detector needs the cap to do real work, whereas the redemption window above
-// already ends normal answers, so this only ever fires on a genuine fault. A
-// tight cap here would re-create the very problem being fixed.
-const MAX_LISTEN_MS = 45000;
+// Backstop against a stuck mic in a noisy room, where the detector may never see
+// silence. Timed from the moment SPEECH starts, not from the mic opening, so
+// thinking time before answering is never counted - the learner may take as long
+// as they like to begin. In effect: "you have been talking for 60 seconds
+// without a 2.5s pause", which normal speech does not reach.
+//
+// Deliberately looser than SAIF's 25s. Theirs can afford to be tight because
+// their cap still submits the audio it captured; Silero gives no way to flush
+// speech in progress, so ours loses the utterance and must therefore only ever
+// fire when something is genuinely broken.
+const MAX_SPEECH_MS = 60000;
 
 export class SpeechManager {
     private vad: any = null;
@@ -95,7 +100,14 @@ export class SpeechManager {
                 ort.env.wasm.wasmPaths = '/';
                 ort.env.wasm.numThreads = 1;
             },
+            // The runaway guard is armed when speech actually begins, so a
+            // learner can take as long as they need to gather their thoughts
+            // before saying anything.
+            onSpeechStart: () => {
+                this.armSpeechCap();
+            },
             onSpeechEnd: (audio: Float32Array) => {
+                this.clearSpeechCap();
                 this.handleSpeechEnd(audio);
             },
         });
@@ -121,14 +133,6 @@ export class SpeechManager {
             this.vad.start();
             this.isListening = true;
             if (this.onListeningChange) this.onListeningChange(true);
-
-            if (this.maxListenTimer) clearTimeout(this.maxListenTimer);
-            this.maxListenTimer = setTimeout(() => {
-                if (!this.isListening) return;
-                console.warn('Mic hit the safety cap; stopping. Press MIC to continue.');
-                this.stopListening();
-                if (this.onError) this.onError('Microphone stopped. Press MIC to carry on.');
-            }, MAX_LISTEN_MS);
         } catch (error) {
             console.error('VAD initialization error:', error);
             if (this.onError) {
@@ -144,11 +148,27 @@ export class SpeechManager {
         }
     }
 
-    stopListening() {
+    private armSpeechCap() {
+        this.clearSpeechCap();
+        this.maxListenTimer = setTimeout(() => {
+            if (!this.isListening) return;
+            console.warn('Mic ran past the safety cap while speech was still detected.');
+            this.stopListening();
+            if (this.onError) {
+                this.onError('Microphone stopped. Press MIC to carry on.');
+            }
+        }, MAX_SPEECH_MS);
+    }
+
+    private clearSpeechCap() {
         if (this.maxListenTimer) {
             clearTimeout(this.maxListenTimer);
             this.maxListenTimer = null;
         }
+    }
+
+    stopListening() {
+        this.clearSpeechCap();
         if (!this.isListening) return;
         this.isListening = false;
         if (this.onListeningChange) this.onListeningChange(false);
