@@ -73,3 +73,51 @@ STT ~1.0 s on GPU; TTS 3.5–4.5× faster than realtime.
   has not been tested on real learner speech.
 - `unmute_readme.md` in the repo root is stray research debris (Kyutai's README), not
   project content — safe to delete.
+
+---
+
+## 2026-07-21 — The game engine
+
+Rebuilt the app around a real engine, from `documents/A structured taxonomy of real
+interrogation techniques.md`. Roughly a quarter of that document had reached the code, and
+only as vocabulary in the character prompts.
+
+**Design rule: the engine decides *what* happens; the LLM decides *how* it is said.** One
+structured call per turn returns the line, the tactic used, and what the learner committed
+to — median **3.6s/turn**, unchanged from before.
+
+### What exists now
+- `scenario/` — the case with structured evidence (strength + the three Evidence Framing
+  Matrix levels + what each item contradicts), and secret **briefs** dealt per session.
+- `engine/timeline.py` — the Timeline Validator the design doc specified and never had.
+- `engine/analysis.py` — CBCA/RM-lite content scoring; hedging and self-correction count as
+  markers of *truthful* recall, per the research.
+- `engine/tactics.py` — 17 techniques with PEACE stage gates, preconditions and cooldowns.
+- `engine/director.py` — the five documented hand-off triggers (100% trigger-driven in
+  simulation, vs a coin flip before), pressure, PEACE progression, outcomes.
+- **The two-hander** — detectives confer in front of the learner; `Turn.addressed_to`
+  distinguishes overheard from directed speech. Chen's arc is state
+  (`neutral → rapport → advocate → identifying → minimising → sting`); the sting fires
+  *only* when a claim she vouched for is the one that breaks.
+
+### Rules the engine enforces
+- **Language never raises pressure.** Errors, hesitation and short-but-responsive answers
+  are ignored; only deliberate evasion counts.
+- **Being disbelieved is not being caught lying.** Much of the evidence is circumstantial by
+  design, so an honest, consistent account is *never* detained however bad it looks.
+- **Never convict on inferred data.** Speech gives one time bound, not two; inferred spans
+  measure coverage but cannot establish a contradiction.
+
+### Verified
+64 unit tests (no LLM). Three full interviews against Azure: consistent-innocent (not
+detained, no lie inferred), self-contradicting (**detained**, evidence disclosed at
+escalating framing, **reverse chronology fired**), monosyllabic learner (pressure stays low,
+`rapport_repair` fires). Resume survives a full backend restart. Asides render as one wav
+containing both voices, verified byte-exactly.
+
+### Still open
+- **Microphone remains the one untested link** — the automated browser blocks capture.
+- Post-session KLP assessment and xAPI (deliberately deferred). `Turn.modality` and
+  `addressed_to` and the `claims` table are already capturing what it will need.
+- `released` is hard to reach on briefs where the case evidence points at the learner
+  regardless; worth tuning once you have played it.
