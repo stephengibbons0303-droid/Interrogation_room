@@ -221,7 +221,12 @@ export class SpeechManager {
             if (onStart) onStart();
         };
 
-        const canStream = typeof MediaSource !== 'undefined'
+        // Only take the MediaSource path when the response really is MP3. The local
+        // Kokoro sidecar returns a complete audio/wav, which MediaSource cannot
+        // buffer — feeding WAV bytes into an audio/mpeg SourceBuffer just fails.
+        const contentType = response.headers.get('content-type') || '';
+        const canStream = contentType.includes('audio/mpeg')
+            && typeof MediaSource !== 'undefined'
             && MediaSource.isTypeSupported('audio/mpeg');
 
         if (canStream && response.body) {

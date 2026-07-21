@@ -1,12 +1,11 @@
 import os
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import uvicorn
 import logging
 import httpx
-from openai import OpenAI
 from agent import agent_instance
 
 logging.basicConfig(level=logging.INFO)
@@ -22,18 +21,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OpenAI client for TTS
-openai_client = None
-if os.getenv("OPENAI_API_KEY"):
-    openai_client = OpenAI()
-
-# Deepgram API key for STT
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-
-VOICE_MAP = {
-    "Reynolds": "onyx",
-    "Chen": "nova",
-}
+# Local speech sidecars (pair C). Both are OpenAI-compatible, so swapping back to a
+# hosted provider is a URL change. See backend/speech/ for the servers themselves.
+# Character -> Kokoro voice mapping lives in the TTS server, not here.
+STT_URL = os.getenv("STT_URL", "http://127.0.0.1:7677/v1/audio/transcriptions")
+TTS_URL = os.getenv("TTS_URL", "http://127.0.0.1:7678/v1/audio/speech")
 
 class ChatRequest(BaseModel):
     message: str
@@ -41,7 +33,7 @@ class ChatRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str = "onyx"
+    voice: str = "Reynolds"
 
 @app.get("/")
 async def root():
@@ -55,71 +47,66 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.post("/tts")
 async def tts_endpoint(request: TTSRequest):
-    if not openai_client:
-        raise HTTPException(status_code=503, detail="OpenAI API key not configured")
+    """Synthesise a detective's line via the local Kokoro sidecar.
 
-    voice = VOICE_MAP.get(request.voice, request.voice)
+    Kokoro returns a complete WAV rather than a stream, so unlike the previous
+    hosted-MP3 path there is no chunked playback - the whole utterance is
+    synthesised before audio starts. Roughly 3.5-4.5x faster than realtime, so a
+    typical 20-word line costs ~1.7s of silence up front.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                TTS_URL,
+                json={"input": request.text, "voice": request.voice},
+                timeout=30.0,
+            )
+    except httpx.TimeoutException:
+        logger.error("TTS request timed out")
+        raise HTTPException(status_code=504, detail="TTS request timed out")
+    except Exception as e:
+        logger.error(f"TTS unreachable at {TTS_URL}: {e}")
+        raise HTTPException(status_code=502, detail="TTS service unreachable")
 
-    def stream_audio():
-        try:
-            with openai_client.audio.speech.with_streaming_response.create(
-                model="tts-1",
-                voice=voice,
-                input=request.text,
-                response_format="mp3",
-            ) as response:
-                yield from response.iter_bytes(chunk_size=4096)
-        except Exception as e:
-            logger.error(f"TTS streaming error: {e}")
+    if response.status_code != 200:
+        logger.error(f"TTS error: {response.status_code} {response.text[:200]}")
+        raise HTTPException(status_code=502, detail="TTS provider error")
 
-    return StreamingResponse(
-        stream_audio(),
-        media_type="audio/mpeg",
+    return Response(
+        content=response.content,
+        media_type="audio/wav",
         headers={"Content-Disposition": "inline"},
     )
 
 @app.post("/stt")
 async def stt_endpoint(audio: UploadFile = File(...)):
-    if not DEEPGRAM_API_KEY:
-        raise HTTPException(status_code=503, detail="Deepgram API key not configured")
+    """Transcribe learner speech via the local faster-whisper sidecar.
 
+    Runs large-v3, not small.en: the learners are non-native speakers, and heavily
+    accented L2 English is precisely where the small English-only model degrades.
+    """
     try:
         content = await audio.read()
         content_type = audio.content_type or "audio/wav"
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://api.deepgram.com/v1/listen",
-                params={
-                    "model": "nova-2",
-                    "language": "en",
-                    "smart_format": "true",
-                },
-                headers={
-                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
-                    "Content-Type": content_type,
-                },
-                content=content,
-                timeout=10.0,
+                STT_URL,
+                files={"file": (audio.filename or "audio.wav", content, content_type)},
+                timeout=60.0,
             )
-
-        if response.status_code != 200:
-            logger.error(f"Deepgram error: {response.status_code} {response.text}")
-            raise HTTPException(status_code=502, detail="STT provider error")
-
-        data = response.json()
-        transcript = data["results"]["channels"][0]["alternatives"][0]["transcript"]
-
-        return {"text": transcript}
-
     except httpx.TimeoutException:
-        logger.error("Deepgram request timed out")
+        logger.error("STT request timed out")
         raise HTTPException(status_code=504, detail="STT request timed out")
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"STT error: {e}")
-        raise HTTPException(status_code=500, detail="Speech-to-text failed")
+        logger.error(f"STT unreachable at {STT_URL}: {e}")
+        raise HTTPException(status_code=502, detail="STT service unreachable")
+
+    if response.status_code != 200:
+        logger.error(f"STT error: {response.status_code} {response.text[:200]}")
+        raise HTTPException(status_code=502, detail="STT provider error")
+
+    return {"text": response.json().get("text", "")}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
