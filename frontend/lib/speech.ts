@@ -34,6 +34,7 @@ export class SpeechManager {
     private vadReady: Promise<void> | null = null;
     private currentAudio: HTMLAudioElement | null = null;
     private maxListenTimer: ReturnType<typeof setTimeout> | null = null;
+    private speechStartedAt: number = 0;
     isListening: boolean = false;
     isTranscribing: boolean = false;
 
@@ -111,13 +112,29 @@ export class SpeechManager {
             // learner can take as long as they need to gather their thoughts
             // before saying anything.
             onSpeechStart: () => {
+                this.speechStartedAt = Date.now();
+                console.info('[mic] speech started');
                 this.armSpeechCap();
                 if (this.onSpeechActivity) this.onSpeechActivity(true);
             },
             onSpeechEnd: (audio: Float32Array) => {
+                const heldMs = Date.now() - (this.speechStartedAt || Date.now());
+                console.info(`[mic] speech ended after ${heldMs}ms, ${audio.length} samples`);
                 this.clearSpeechCap();
                 if (this.onSpeechActivity) this.onSpeechActivity(false);
                 this.handleSpeechEnd(audio);
+            },
+            // The VAD decided the speech was too short to be real and threw the
+            // audio away. Without this handler that happens silently, and the
+            // learner sees a recording light, no transcript, and detectives
+            // carrying on as though they had said nothing.
+            onVADMisfire: () => {
+                const heldMs = Date.now() - (this.speechStartedAt || Date.now());
+                console.warn(`[mic] VAD MISFIRE - audio discarded after ${heldMs}ms `
+                    + `(shorter than minSpeechMs). Nothing was sent.`);
+                this.clearSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(false);
+                if (this.onError) this.onError("Didn't catch that — try again, a little longer.");
             },
         });
     }
@@ -192,8 +209,12 @@ export class SpeechManager {
         this.isListening = false;
         if (this.onListeningChange) this.onListeningChange(false);
 
-        // Skip very short audio (< 100ms at 16kHz = noise)
-        if (audio.length < 1600) return;
+        // Skip very short audio (< 100ms at 16kHz = noise). Logged, because a
+        // silent drop here is indistinguishable to the learner from a broken mic.
+        if (audio.length < 1600) {
+            console.warn(`[mic] discarded ${audio.length} samples as too short to be speech`);
+            return;
+        }
 
         this.isTranscribing = true;
         if (this.onTranscribing) this.onTranscribing(true);
@@ -213,9 +234,15 @@ export class SpeechManager {
             }
 
             const data = await response.json();
+            console.info(`[mic] transcript: ${JSON.stringify(data.text ?? '')}`);
 
             if (data.text && data.text.trim()) {
                 this.onResult(data.text.trim());
+            } else {
+                // Whisper heard nothing usable. Say so rather than leaving them
+                // staring at a recording light that produced no result.
+                console.warn('[mic] STT returned an empty transcript');
+                if (this.onError) this.onError("Didn't catch that — try again.");
             }
         } catch (error) {
             console.error('Transcription error:', error);
