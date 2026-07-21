@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
 import BriefPanel from './BriefPanel';
+import BriefingScreen from './BriefingScreen';
 import { getInterview, sendMessage, type Modality, type Utterance } from '../lib/api';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
@@ -39,6 +40,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [currentPhase, setCurrentPhase] = useState("engage");
     const [hasStarted, setHasStarted] = useState(false);
+    const [briefed, setBriefed] = useState(false);
     const [outcome, setOutcome] = useState<string | null>(null);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -246,6 +248,25 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         };
     }, []);
 
+    /** The detectives' opening line. Deferred until after the briefing, so the
+     *  learner is not read their brief and questioned in the same breath. */
+    const beginInterrogation = useCallback(() => {
+        setBriefed(true);
+        const openingMsg: Message = {
+            role: 'agent',
+            content: "Have a seat. State your full name for the record, please.",
+            agentName: 'Reynolds',
+            emotion: 'measured',
+        };
+        setIsWaiting(true);
+        setTimeout(() => {
+            playAgentAudio([{ text: openingMsg.content, voice: 'Reynolds' }], undefined, () => {
+                setMessages([openingMsg]);
+                setIsWaiting(false);
+            });
+        }, 300);
+    }, [playAgentAudio]);
+
     // Start the interview after user clicks — this unlocks audio in the browser
     const startInterview = useCallback(async () => {
         setHasStarted(true);
@@ -272,24 +293,14 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             } finally {
                 setIsWaiting(false);
             }
+            // Resuming skips the briefing - they were read it the first time,
+            // and the panel is still there if they want it.
+            setBriefed(true);
             return;
         }
-
-        const openingMsg: Message = {
-            role: 'agent',
-            content: "Have a seat. State your full name for the record, please.",
-            agentName: 'Reynolds',
-            emotion: 'measured'
-        };
-        setIsWaiting(true);
-
-        setTimeout(() => {
-            playAgentAudio([{ text: openingMsg.content, voice: 'Reynolds' }], undefined, () => {
-                setMessages([openingMsg]);
-                setIsWaiting(false);
-            });
-        }, 300);
-    }, [playAgentAudio, resume, interviewId]);
+        // A new interview goes to the briefing screen; beginInterrogation()
+        // runs when they say they are ready.
+    }, [resume, interviewId]);
 
     useEffect(() => {
         resetSilenceTimer();
@@ -397,6 +408,13 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                 </div>
             </div>
         );
+    }
+
+    // Read them their brief first, with nothing else happening. Previously this
+    // appeared at the same moment the first question did, so there was no chance
+    // to take it in.
+    if (!briefed) {
+        return <BriefingScreen interviewId={interviewId} onReady={beginInterrogation} />;
     }
 
     // The interview has concluded. What they said decided this.

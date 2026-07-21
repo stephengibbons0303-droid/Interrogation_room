@@ -10,9 +10,12 @@ import { getBrief, type Brief } from '../lib/api';
  * while someone picks at it is the exercise; remembering five bullet points is
  * not. If the card were hidden this would quietly become a memory test.
  */
-export default function BriefPanel({ interviewId }: { interviewId: string }) {
+export default function BriefPanel({ interviewId, defaultOpen = false }:
+    { interviewId: string; defaultOpen?: boolean }) {
     const [brief, setBrief] = useState<Brief | null>(null);
-    const [open, setOpen] = useState(true);
+    // Collapsed by default during the interview: they have just been read it on
+    // the briefing screen, and expanded it covered most of the transcript.
+    const [open, setOpen] = useState(defaultOpen);
 
     useEffect(() => {
         getBrief(interviewId).then(setBrief).catch(() => setBrief(null));

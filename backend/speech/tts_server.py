@@ -31,6 +31,13 @@ VOICES = os.path.join(ROOT, "voices-v1.0.bin")
 VOICE_MAP = {
     "Reynolds": "bm_george",     # British male, measured and cold
     "Chen":     "bf_isabella",   # British female, warm
+
+    # Reads the learner their own brief before the interview starts. American on
+    # purpose: it must be unmistakably NOT one of the two British detectives, and
+    # accent is the fastest cue there is. Another British voice would be heard as
+    # a third officer, which is precisely the wrong frame - this is the learner's
+    # own preparation, from outside the room.
+    "Briefing": "am_michael",
 }
 DEFAULT_VOICE = "bm_george"
 

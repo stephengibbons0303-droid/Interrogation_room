@@ -151,6 +151,11 @@ class TurnOut(BaseModel):
     tactic_used: str = Field(description="the id of the tactic you chose")
     emotion: Optional[str] = Field(None, description="one word for the delivery")
     responsive: bool = Field(True, description="did the subject's last message address the question asked")
+    subject_name: Optional[str] = Field(
+        None,
+        description=("the subject's own name, ONLY if they have clearly given it as their "
+                     "name. Null otherwise. Never a greeting, courtesy or acknowledgement "
+                     "such as 'thank you', 'yes', 'I understand' or 'sorry'."))
     topic: Optional[str] = None
     topic_complete: bool = False
     chen_vouched_claim: bool = Field(
@@ -195,15 +200,11 @@ class InterrogationAgent:
         except Exception as e:
             print(f"WARNING: memory write failed ({e})")
 
-    def _extract_name(self, message: str) -> None:
-        if self.player_name or self.state.turn > 3:
-            return
-        cleaned = message.strip().rstrip('.').strip()
-        words = cleaned.split()
-        if len(words) <= 4 and not any(
-                w.lower() in ('yes', 'no', 'why', 'what', 'who', 'where', 'when',
-                              'how', 'i') for w in words):
-            self.player_name = cleaned
+    # The name now comes from the model's structured extraction, not a heuristic.
+    # The old rule - "a short message with no question words is probably a name" -
+    # took "Yes, thank you." as the subject's name, because the stop-word check
+    # compared "yes," with its comma and never matched. The detectives then spent
+    # the rest of the interview addressing them as Mr Thank You.
 
     # ── the turn ────────────────────────────────────────────────────────────
 
@@ -216,7 +217,6 @@ class InterrogationAgent:
 
         if not is_silence:
             self.state.turn += 1
-            self._extract_name(user_message)
 
         # Preliminary read. Struggle and refusal are detectable without the model;
         # only "did it answer the question" needs one, and that arrives below.
@@ -284,6 +284,12 @@ class InterrogationAgent:
         # keyed on "[minimisation]" and never matches "minimisation", so the
         # tactic could repeat every turn.
         result.tactic_used = (result.tactic_used or "").strip().strip("[]").strip()
+
+        # First clear statement of their name wins; later turns cannot rewrite it.
+        if not self.player_name and result.subject_name:
+            candidate = result.subject_name.strip().strip('.').strip()
+            if candidate and len(candidate.split()) <= 5:
+                self.player_name = candidate
 
         self.state.cooldowns.update(self._cooldown_for(result.tactic_used))
 

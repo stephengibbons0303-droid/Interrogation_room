@@ -1,10 +1,34 @@
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 
+// Speech-end tuning, taken from SAIF's hands-free tutor surface, which has been
+// through many iterations and fires reliably.
+//
+// The previous 500ms ended a learner's answer after half a second of pause.
+// Someone reaching for a word in a second language pauses far longer than that,
+// so extended answers were being cut off mid-sentence - the single most
+// damaging failure available here, because it punishes exactly the production
+// the app exists to elicit.
+//
+// SAIF's note on why this is generous: "so a mid-sentence pause to find a word
+// isn't cut off. The 'finished' timer only starts once speech has been heard,
+// so a learner who pauses to think BEFORE answering is never cut off." Silero's
+// redemption window has the same semantics - it only runs after speech - so a
+// long silence before they begin costs them nothing.
+const SILENCE_MS = 2500;
+
+// Backstop against a stuck or open mic in a noisy room, where the detector may
+// never see silence. Deliberately more generous than SAIF's 25s: their RMS
+// detector needs the cap to do real work, whereas the redemption window above
+// already ends normal answers, so this only ever fires on a genuine fault. A
+// tight cap here would re-create the very problem being fixed.
+const MAX_LISTEN_MS = 45000;
+
 export class SpeechManager {
     private vad: any = null;
     private micStream: MediaStream | null = null;
     private vadReady: Promise<void> | null = null;
     private currentAudio: HTMLAudioElement | null = null;
+    private maxListenTimer: ReturnType<typeof setTimeout> | null = null;
     isListening: boolean = false;
     isTranscribing: boolean = false;
 
@@ -60,7 +84,7 @@ export class SpeechManager {
             positiveSpeechThreshold: 0.5,
             negativeSpeechThreshold: 0.35,
             minSpeechMs: 250,
-            redemptionMs: 500,
+            redemptionMs: SILENCE_MS,
             preSpeechPadMs: 300,
             // Assets served from public/ (copied by prebuild script).
             workletURL: '/vad.worklet.bundle.min.js',
@@ -97,6 +121,14 @@ export class SpeechManager {
             this.vad.start();
             this.isListening = true;
             if (this.onListeningChange) this.onListeningChange(true);
+
+            if (this.maxListenTimer) clearTimeout(this.maxListenTimer);
+            this.maxListenTimer = setTimeout(() => {
+                if (!this.isListening) return;
+                console.warn('Mic hit the safety cap; stopping. Press MIC to continue.');
+                this.stopListening();
+                if (this.onError) this.onError('Microphone stopped. Press MIC to carry on.');
+            }, MAX_LISTEN_MS);
         } catch (error) {
             console.error('VAD initialization error:', error);
             if (this.onError) {
@@ -113,6 +145,10 @@ export class SpeechManager {
     }
 
     stopListening() {
+        if (this.maxListenTimer) {
+            clearTimeout(this.maxListenTimer);
+            this.maxListenTimer = null;
+        }
         if (!this.isListening) return;
         this.isListening = false;
         if (this.onListeningChange) this.onListeningChange(false);
