@@ -1,5 +1,6 @@
 import os
 import random
+from pathlib import Path
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings, ChatOpenAI, OpenAIEmbeddings
@@ -30,6 +31,14 @@ class LocalEmbeddings(Embeddings):
         return self.embed_documents([text])[0]
 
 load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# Anchored to this file's directory rather than the process working directory.
+# "./chroma_db" meant the detectives' memory depended on where the server was
+# launched from: start it one directory up and Chroma quietly builds a new,
+# empty store, so every previous statement is forgotten with no error shown.
+CHROMA_DIR = os.getenv("CHROMA_DIR") or str(BASE_DIR / "chroma_db")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NARRATIVE PHASES - The player discovers the situation gradually
@@ -290,7 +299,7 @@ def _build_vector_store():
         return Chroma(
             collection_name=f"interrogation_memory_{tag}",
             embedding_function=embeddings,
-            persist_directory="./chroma_db",
+            persist_directory=CHROMA_DIR,
         )
     except Exception as e:
         print(f"WARNING: vector store init failed ({e})")

@@ -13,7 +13,19 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
-!backend/chroma_db/**
+
+# Chroma vector memory. Runtime state, not source.
+#
+# Chroma splits itself across chroma.sqlite3 (which collections exist, their
+# dimensions and segment ids) and per-segment index directories. Those must stay
+# in lockstep, and git tracks them as independent files with no atomicity
+# between them - so a checkout, stash, revert or merge can pair a sqlite from
+# one moment with index directories from another and leave the store
+# inconsistent. The running server also holds the sqlite open, so git
+# operations fail partway through.
+#
+# Nothing is lost by ignoring it: the memory rebuilds as learners talk.
+backend/chroma_db/
 
 # Node
 node_modules/

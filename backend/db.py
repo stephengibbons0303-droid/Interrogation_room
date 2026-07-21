@@ -11,12 +11,20 @@ them.
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import (Column, DateTime, ForeignKey, Integer, String, Text,
                         create_engine)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./interrogation.db")
+BASE_DIR = Path(__file__).resolve().parent
+
+# Anchored to this file's directory rather than the process working directory.
+# A CWD-relative path means starting the server from somewhere else silently
+# creates a brand new, empty database - every account and interview appears to
+# have vanished, with no error to explain it.
+DATABASE_URL = (os.getenv("DATABASE_URL")
+                or f"sqlite:///{(BASE_DIR / 'interrogation.db').as_posix()}")
 
 # check_same_thread is a SQLite-only concern: the HTTP server touches the DB
 # from multiple worker threads.
