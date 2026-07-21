@@ -41,17 +41,24 @@ export class SpeechManager {
     onError?: (error: string) => void;
     onListeningChange?: (listening: boolean) => void;
     onTranscribing?: (transcribing: boolean) => void;
+    /** Fires true the moment speech is detected and false when it ends.
+     *  The silence prompt needs this: "the mic is open" and "nobody is talking"
+     *  are different things, and interrupting someone mid-sentence because a
+     *  timer started when the mic opened is the worst thing this app can do. */
+    onSpeechActivity?: (active: boolean) => void;
 
     constructor(
         onResult: (text: string) => void,
         onError?: (error: string) => void,
         onListeningChange?: (listening: boolean) => void,
-        onTranscribing?: (transcribing: boolean) => void
+        onTranscribing?: (transcribing: boolean) => void,
+        onSpeechActivity?: (active: boolean) => void
     ) {
         this.onResult = onResult;
         this.onError = onError;
         this.onListeningChange = onListeningChange;
         this.onTranscribing = onTranscribing;
+        this.onSpeechActivity = onSpeechActivity;
     }
 
     // Cached MicVAD constructor — loaded lazily on first use.
@@ -105,9 +112,11 @@ export class SpeechManager {
             // before saying anything.
             onSpeechStart: () => {
                 this.armSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(true);
             },
             onSpeechEnd: (audio: Float32Array) => {
                 this.clearSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(false);
                 this.handleSpeechEnd(audio);
             },
         });

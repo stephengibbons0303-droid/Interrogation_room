@@ -45,6 +45,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
+    // True while the learner is actually speaking. A ref rather than state so
+    // the silence timer reads it without needing to be re-created.
+    const speechActive = useRef(false);
 
     const handleSendMessageRef = useRef<(text?: string, modality?: Modality) => Promise<void>>(async () => { });
 
@@ -113,7 +116,10 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     const resetSilenceTimer = useCallback(() => {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
-        if (isListening) {
+        // Never arm it while they are mid-sentence. An open microphone is not
+        // the same as a silent room, and prompting over someone who is talking
+        // discards what they said and answers as though they had said nothing.
+        if (isListening && !speechActive.current) {
             // 4-8s. The research puts the point where silence starts to bite at
             // about four seconds, and the project's own design doc specifies
             // random(4,8). The previous 12-20s left a learner floundering in
@@ -128,6 +134,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
 
     const handleSilenceTrigger = async () => {
         if (inputText.length > 0) return;
+        // Last line of defence: they started talking between the timer being
+        // armed and it firing.
+        if (speechActive.current) return;
 
         try {
             if (speechManager.current && isListening) {
@@ -236,6 +245,16 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             // onTranscribing — Whisper is processing
             (transcribing) => {
                 setIsTranscribing(transcribing);
+            },
+            // onSpeechActivity — they have started or stopped talking.
+            // Starting cancels any pending silence prompt outright; a learner
+            // who is mid-sentence must never be talked over.
+            (active) => {
+                speechActive.current = active;
+                if (active && silenceTimer.current) {
+                    clearTimeout(silenceTimer.current);
+                    silenceTimer.current = null;
+                }
             }
         );
 
