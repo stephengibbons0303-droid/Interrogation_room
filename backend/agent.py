@@ -279,6 +279,12 @@ class InterrogationAgent:
         if is_aside:
             self.state.asides_this_stage += 1
 
+        # The shortlist is presented as "[tactic_id] instruction", and the model
+        # sometimes echoes the brackets back. Left unstripped, the cooldown is
+        # keyed on "[minimisation]" and never matches "minimisation", so the
+        # tactic could repeat every turn.
+        result.tactic_used = (result.tactic_used or "").strip().strip("[]").strip()
+
         self.state.cooldowns.update(self._cooldown_for(result.tactic_used))
 
         # Evidence the model was told to put this turn is now on the record, at

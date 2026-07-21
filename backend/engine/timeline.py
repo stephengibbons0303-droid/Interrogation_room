@@ -6,7 +6,7 @@ been given": nothing knew a timeline existed.
 
 Pure functions over claims. No LLM, no I/O, so the whole thing is unit-testable.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import time
 from typing import List, Optional
 
@@ -105,6 +105,50 @@ class TimelineReport:
         return " ".join(parts)
 
 
+def normalised(claims: List[Claim]) -> List[Claim]:
+    """Fill in the bound that speech leaves out.
+
+    People do not talk in intervals. "I was at the cafe until eight" gives an end
+    and no start; "I left at ten" gives a start and no end. Requiring both bounds
+    discarded almost every real claim, which left the timeline permanently empty
+    and every technique that depends on it permanently locked.
+
+    A missing start is inferred from the previous claim (or the start of the
+    window); a missing end from the next claim (or the end of the window).
+    Returns copies - the absent bounds are data, and the extractor's honesty
+    about what was actually said should not be overwritten.
+    """
+    usable = sorted(
+        [c for c in claims
+         if c.superseded_by is None and (c.start_min is not None or c.end_min is not None)],
+        key=lambda c: c.start_min if c.start_min is not None else c.end_min,
+    )
+
+    out: List[Claim] = []
+    for i, c in enumerate(usable):
+        start, end = c.start_min, c.end_min
+        inferred = start is None or end is None
+
+        if start is None:
+            prev_end = out[-1].end_min if out else None
+            start = prev_end if prev_end is not None else WINDOW_START_MIN
+            if end is not None and start >= end:
+                start = max(WINDOW_START_MIN, end - 60)
+
+        if end is None:
+            nxt = None
+            if i + 1 < len(usable):
+                n = usable[i + 1]
+                nxt = n.start_min if n.start_min is not None else n.end_min
+            end = nxt if (nxt is not None and nxt > start) else WINDOW_END_MIN
+
+        if end <= start:
+            continue
+
+        out.append(replace(c, start_min=start, end_min=end, inferred=inferred))
+    return out
+
+
 def _clip(claim: Claim) -> Optional[tuple]:
     """Clamp a claim to the window, or drop it if it falls entirely outside."""
     start = max(claim.start_min, WINDOW_START_MIN)
@@ -116,10 +160,7 @@ def build(claims: List[Claim]) -> TimelineReport:
     """Assemble the live claims into a timeline and find everything wrong with it."""
     report = TimelineReport()
 
-    blocks = sorted(
-        [c for c in claims if c.superseded_by is None and c.has_window],
-        key=lambda c: c.start_min,
-    )
+    blocks = normalised(claims)
     report.blocks = blocks
     if not blocks:
         return report

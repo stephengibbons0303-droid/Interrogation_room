@@ -72,6 +72,11 @@ class Claim:
     # sting fires only on one of these.
     vouched_by_chen: bool = False
 
+    # Set on the copies produced by timeline.normalised() when a bound had to be
+    # invented because speech only gave one. Such a span is good enough to
+    # measure coverage, but not to accuse someone of contradicting themselves.
+    inferred: bool = False
+
     @property
     def has_window(self) -> bool:
         return self.start_min is not None and self.end_min is not None

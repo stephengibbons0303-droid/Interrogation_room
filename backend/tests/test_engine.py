@@ -73,6 +73,31 @@ old.superseded_by = "new"
 r = tl.build([old, block("new", 17, 0, 21, 0, "cafe")])
 check("superseded claims are excluded", len(r.blocks) == 1 and r.blocks[0].id == "new")
 
+# People speak in points, not intervals. Requiring both bounds discarded every
+# real claim and left the timeline permanently empty.
+half_open = [
+    Claim(id="1", turn_seq=1, text="at the cafe until eight", end_min=1200, location="cafe"),
+    Claim(id="2", turn_seq=1, text="walked straight home", start_min=1200, location="home"),
+    Claim(id="3", turn_seq=2, text="home about half eight", start_min=1230, location="home"),
+]
+check("claims with only one bound are unusable raw",
+      sum(1 for c in half_open if c.has_window) == 0)
+norm = tl.normalised(half_open)
+check("normalisation recovers them", len(norm) == 3, f"got {len(norm)}")
+check("'until eight' gets a start from the window",
+      norm[0].start_min == tl.WINDOW_START_MIN and norm[0].end_min == 1200)
+check("'walked home' gets an end from the next claim", norm[1].end_min == 1230)
+check("the last claim runs to the end of the window",
+      norm[-1].end_min == tl.WINDOW_END_MIN)
+r = tl.build(half_open)
+check("a half-open account still yields a usable timeline", r.complete,
+      f"coverage={r.coverage:.2f}")
+check("invented bounds are marked as inferred", all(c.inferred for c in norm),
+      "an inferred span may measure coverage but must not convict anyone")
+
+stated = tl.normalised([block("s", 17, 0, 20, 0, "cafe")])
+check("a fully stated window is NOT marked inferred", not stated[0].inferred)
+
 
 print("\nSTATEMENT ANALYSIS  (language must never raise pressure)")
 
@@ -302,11 +327,24 @@ st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.45)
 check("shaky account -> under investigation",
       dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
 
+# Detaining requires BOTH: evidence put to them, and them actually having lied.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
-st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1,
-                                       detail="d", raised=True))
-check("caught out on evidence that was PUT to them -> detained",
+st.contradictions += [
+    Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
+    Contradiction(id="b", kind="brief", turn_seq=1, detail="they lied"),
+]
+check("lied AND caught on evidence -> detained",
       dr.decide_outcome(st) == Outcome.DETAINED.value)
+
+# The one that matters most: an honest learner facing circumstantial evidence.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.95)
+st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1,
+                                       detail="a witness saw someone matching your description",
+                                       raised=True))
+check("an honest, consistent account is NEVER detained",
+      dr.decide_outcome(st) != Outcome.DETAINED.value,
+      "being disbelieved is not being caught lying - and punishing an honest "
+      "account teaches the learner that talking freely is dangerous")
 
 st = InterviewState(stage=Stage.PROBE.value, pressure=0.9)
 check("no outcome before closure", dr.decide_outcome(st) is None)

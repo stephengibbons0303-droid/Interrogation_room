@@ -14,7 +14,8 @@ from engine import tactics as tac
 from engine.analysis import TurnAnalysis
 from engine.state import (CHEN_ARC, STAGE_ORDER, ChenStance, Claim,
                           Contradiction, InterviewState, Outcome, Stage)
-from engine.timeline import TimelineReport, build as build_timeline
+from engine.timeline import (TimelineReport, build as build_timeline,
+                             normalised as normalise)
 
 LEAD = "Reynolds"
 SECOND = "Chen"
@@ -25,6 +26,11 @@ SECOND = "Chen"
 LEAD_SHARE_TARGET = 0.75
 
 MAX_TURNS = 40
+
+# A brief conflict needs a real overlap, not a passing one. Describing a single
+# journey in stages ("walked to the station", "took the train home") otherwise
+# reads as departing from the truth when it is simply a different segmentation.
+_BRIEF_CONFLICT_MINUTES = 30
 
 
 # ── speaker selection ────────────────────────────────────────────────────────
@@ -105,6 +111,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     """Fold a learner turn into state and return any NEW contradictions."""
     found: List[Contradiction] = []
 
+    new_ids = []
     for raw in extraction.claims:
         claim = Claim(
             id=str(uuid.uuid4()),
@@ -117,57 +124,79 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             people=raw.get("people") or [],
             vouched_by_chen=extraction.chen_vouched_claim,
         )
+        state.claims.append(claim)
+        new_ids.append(claim.id)
+
+    # Detection runs over NORMALISED claims: speech gives one bound, not two, so
+    # comparing raw windows found nothing at all. See timeline.normalised.
+    spans = {c.id: c for c in normalise(state.claims)}
+
+    for cid in new_ids:
+        claim = spans.get(cid)
+        if claim is None:                      # no time information at all
+            continue
+        original = state.claim(cid)
 
         # Self-contradiction: does this replace something they already said?
-        if claim.has_window:
-            for prior in state.live_claims:
-                if not prior.has_window or prior.id == claim.id:
+        for prior in normalise(state.claims):
+            if prior.id == cid or prior.turn_seq >= claim.turn_seq:
+                continue
+            if not (prior.location and claim.location) or prior.location == claim.location:
+                continue
+            if prior.start_min < claim.end_min and claim.start_min < prior.end_min:
+                prior_row = state.claim(prior.id)
+                if prior_row is None or prior_row.superseded_by:
                     continue
-                overlaps = (prior.start_min < claim.end_min
-                            and claim.start_min < prior.end_min)
-                if overlaps and prior.location and claim.location \
-                        and prior.location != claim.location:
-                    prior.superseded_by = claim.id
-                    found.append(Contradiction(
-                        id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
-                        detail=f"earlier: '{prior.text}' — now: '{claim.text}'",
-                        claim_id=claim.id, against_claim_id=prior.id,
-                        was_vouched=prior.vouched_by_chen,
-                    ))
+                prior_row.superseded_by = cid
+                found.append(Contradiction(
+                    id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
+                    detail=f"earlier: '{prior.text}' - now: '{claim.text}'",
+                    claim_id=cid, against_claim_id=prior.id,
+                    was_vouched=prior_row.vouched_by_chen,
+                ))
 
-        # Against the brief - the ground truth the learner was dealt.
-        if brief:
+        # Against the brief - the ground truth they were dealt. Recorded so the
+        # ending can tell an honest account from a lie; it never raises pressure,
+        # because the detectives cannot see the brief.
+        # Never on an inferred span. "I was home BY quarter to nine" states an
+        # arrival, and filling in a start turns it into a claim to have been at
+        # home for the preceding half hour - which they never said. Concluding
+        # from that that they lied is the engine convicting them on its own
+        # guesswork, and it is the difference between an honest run ending in
+        # release and ending in a cell.
+        if brief and claim.location and not claim.inferred:
             for fact in brief.committed_blocks():
-                if not claim.has_window or not fact.location or not claim.location:
+                if not fact.location or fact.location == claim.location:
                     continue
                 f_start = fact.window[0].hour * 60 + fact.window[0].minute
                 f_end = fact.window[1].hour * 60 + fact.window[1].minute
-                if f_start < claim.end_min and claim.start_min < f_end \
-                        and fact.location != claim.location:
+                overlap = min(f_end, claim.end_min) - max(f_start, claim.start_min)
+                # Substantial overlap only. Narrating one journey in different
+                # segments - "walked to the station", "took the train home" -
+                # produces incidental label clashes that are not lies.
+                if overlap >= _BRIEF_CONFLICT_MINUTES:
                     found.append(Contradiction(
                         id=str(uuid.uuid4()), kind="brief", turn_seq=turn_seq,
                         detail=f"account departs from what actually happened: {fact.text}",
-                        claim_id=claim.id,
+                        claim_id=cid,
                     ))
+                    break
 
-        # Against the evidence - this is what makes SUE mechanical rather than
-        # hand-written: the learner commits, and the engine knows what they hit.
-        if claim.has_window:
-            from datetime import time as _t
-            window = (_t(claim.start_min // 60 % 24, claim.start_min % 60),
-                      _t(min(claim.end_min, 23 * 60 + 59) // 60 % 24, claim.end_min % 60))
-            for ev in case.evidence_for(window, claim.location):
-                if ev.id in state.disclosed:
-                    continue
-                if any(c.evidence_id == ev.id for c in state.contradictions):
-                    continue
-                found.append(Contradiction(
-                    id=str(uuid.uuid4()), kind="evidence", turn_seq=turn_seq,
-                    detail=f"'{claim.text}' does not sit with: {ev.fact}",
-                    claim_id=claim.id, evidence_id=ev.id,
-                ))
-
-        state.claims.append(claim)
+        # Against the evidence - what makes SUE mechanical rather than
+        # hand-written: they commit, and the engine knows what they walked into.
+        from datetime import time as _t
+        window = (_t(claim.start_min // 60 % 24, claim.start_min % 60),
+                  _t(min(claim.end_min, 23 * 60 + 59) // 60 % 24, claim.end_min % 60))
+        for ev in case.evidence_for(window, claim.location):
+            if ev.id in state.disclosed:
+                continue
+            if any(c.evidence_id == ev.id for c in state.contradictions + found):
+                continue
+            found.append(Contradiction(
+                id=str(uuid.uuid4()), kind="evidence", turn_seq=turn_seq,
+                detail=f"'{claim.text}' does not sit with: {ev.fact}",
+                claim_id=cid, evidence_id=ev.id,
+            ))
 
     state.contradictions.extend(found)
 
@@ -303,13 +332,21 @@ def decide_outcome(state: InterviewState) -> Optional[str]:
     if Stage(state.stage) is not Stage.CLOSURE:
         return None
 
-    # Evidence actually put to them, and not explained away.
     caught = [c for c in state.contradictions if c.kind == "evidence" and c.raised]
     wobbled = [c for c in state.contradictions if c.kind == "self"]
+    # The engine knows whether they actually lied. The detectives do not.
+    deceptive = any(c.kind == "brief" for c in state.contradictions) or len(wobbled) >= 2
 
-    if state.pressure >= 0.6 and caught:
+    # Being disbelieved is not the same as being caught lying. Much of the
+    # evidence here is circumstantial by design - a witness who saw "someone
+    # matching your description", a camera that filmed "a figure". An innocent
+    # learner who tells the truth and holds to it walks, however bad it looks,
+    # and that consistency under pressure is exactly the behaviour worth
+    # rewarding. Detaining an honest account would teach them that talking
+    # freely is punished, which is the opposite of the point.
+    if deceptive and caught and state.pressure >= 0.6:
         return Outcome.DETAINED.value
-    if state.pressure >= 0.3 or caught or len(wobbled) >= 2:
+    if caught or wobbled or state.pressure >= 0.4:
         return Outcome.UNDER_INVESTIGATION.value
     return Outcome.RELEASED.value
 
