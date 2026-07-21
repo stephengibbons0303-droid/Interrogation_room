@@ -226,7 +226,36 @@ check("refusing to answer DOES raise pressure", st.pressure > 0)
 st = InterviewState()
 dr.update_pressure(st, [Contradiction(id="e", kind="evidence", turn_seq=1, detail="d")],
                    _an("I was home.", responsive=True), rep)
-check("evidence contradiction raises pressure most", st.pressure >= 0.2)
+check("evidence contradiction raises pressure most", st.pressure >= 0.12)
+
+# The detectives cannot see the brief. On a concealing brief the learner is
+# MEANT to depart from it - that is them playing the part, not being caught.
+st = InterviewState()
+dr.update_pressure(st, [Contradiction(id="b", kind="brief", turn_seq=1, detail="d")],
+                   _an("I was home all evening.", responsive=True), rep)
+check("departing from the hidden brief costs NOTHING", st.pressure == 0.0,
+      f"pressure={st.pressure} - the detectives cannot see the brief")
+
+# A single bad turn must not end the interview outright.
+st = InterviewState()
+many = [Contradiction(id=f"e{i}", kind="evidence", turn_seq=1, detail="d")
+        for i in range(6)]
+dr.update_pressure(st, many, _an("I'm not answering.", responsive=False), rep)
+check("pressure gain is capped per turn", st.pressure <= 0.25, f"{st.pressure}")
+
+# Concealing successfully and never being caught should be a win.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.1)
+st.contradictions.append(Contradiction(id="b", kind="brief", turn_seq=1, detail="d"))
+check("a lie that was never caught -> released",
+      dr.decide_outcome(st) == Outcome.RELEASED.value,
+      "they beat the interview; the engine knowing they lied is not evidence")
+
+# Evidence only counts once it has actually been put to them.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
+st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1,
+                                       detail="d", raised=False))
+check("unput evidence does not detain them",
+      dr.decide_outcome(st) != Outcome.DETAINED.value)
 
 
 print("\nSPEAKER SPLIT  (triggers, not chance)")
@@ -274,8 +303,10 @@ check("shaky account -> under investigation",
       dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
 
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
-st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1, detail="d"))
-check("caught out on evidence -> detained", dr.decide_outcome(st) == Outcome.DETAINED.value)
+st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1,
+                                       detail="d", raised=True))
+check("caught out on evidence that was PUT to them -> detained",
+      dr.decide_outcome(st) == Outcome.DETAINED.value)
 
 st = InterviewState(stage=Stage.PROBE.value, pressure=0.9)
 check("no outcome before closure", dr.decide_outcome(st) is None)

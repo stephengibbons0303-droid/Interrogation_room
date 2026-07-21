@@ -14,9 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+import uuid
+
 from agent import InterrogationAgent
 from auth import get_current_user
-from db import Interview, Turn, User, get_db
+from db import Claim as ClaimRow, Interview, Turn, User, get_db
+from engine.state import InterviewState
+from scenario import briefs as briefs_mod
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -28,7 +32,11 @@ _lock = threading.Lock()
 
 
 def _hydrate(interview: Interview) -> InterrogationAgent:
-    """Rebuild an agent's working state from persisted rows."""
+    """Rebuild an agent from persisted rows, engine state included.
+
+    The database is the source of truth: pressure, the half-built timeline,
+    contradictions and Chen's stance all come back exactly as they were left.
+    """
     history = []
     for t in interview.turns:
         if t.role == "user":
@@ -36,14 +44,16 @@ def _hydrate(interview: Interview) -> InterrogationAgent:
         else:
             history.append({"role": "assistant", "content": t.text,
                             "agent": t.agent_name or "Reynolds"})
+
+    state = InterviewState.from_dict(interview.engine_state)
+    if not state.brief_id and interview.brief_id:
+        state.brief_id = interview.brief_id
+
     return InterrogationAgent(
         interview_id=interview.id,
         history=history,
-        turn_count=interview.turn_count,
+        state=state,
         player_name=interview.player_name,
-        last_agent=interview.last_agent,
-        escalation_score=interview.escalation_score,
-        contradiction_count=interview.contradiction_count,
     )
 
 
@@ -79,6 +89,21 @@ class InterviewSummary(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     preview: Optional[str] = None
+    outcome: Optional[str] = None
+
+
+class BriefFactOut(BaseModel):
+    text: str
+
+
+class BriefOut(BaseModel):
+    """The learner's own brief. Deliberately shown to them - holding it in a
+    second language under pressure is the game; memorising it is not."""
+    id: str
+    premise: str
+    facts: List[BriefFactOut]
+    conceal: Optional[str] = None
+    awkward: Optional[str] = None
 
 
 class TurnOut(BaseModel):
@@ -87,6 +112,8 @@ class TurnOut(BaseModel):
     agent_name: Optional[str] = None
     text: str
     modality: Optional[str] = None
+    addressed_to: Optional[str] = "learner"
+    exchange_id: Optional[str] = None
     phase: Optional[str] = None
     emotion: Optional[str] = None
 
@@ -103,13 +130,23 @@ class ChatRequest(BaseModel):
     modality: str = "typed"          # typed | spoken | silence
 
 
-class ChatResponse(BaseModel):
+class UtteranceOut(BaseModel):
+    speaker: str
     text: str
-    agent: str
+    # "learner" or "partner". An aside is the detectives conferring in front of
+    # them - overheard rather than addressed, and a harder listening task.
+    addressed_to: str = "learner"
     emotion: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    # A turn is usually one utterance; an aside is two.
+    utterances: List[UtteranceOut]
     phase: str
     turn: int
     interview_id: str
+    outcome: Optional[str] = None
+    tactic: Optional[str] = None
 
 
 def _summary(iv: Interview) -> InterviewSummary:
@@ -120,6 +157,7 @@ def _summary(iv: Interview) -> InterviewSummary:
         created_at=iv.created_at.isoformat() if iv.created_at else None,
         updated_at=iv.updated_at.isoformat() if iv.updated_at else None,
         preview=(first_user[:80] if first_user else None),
+        outcome=iv.outcome,
     )
 
 
@@ -148,11 +186,32 @@ def list_interviews(user: User = Depends(get_current_user),
 def create_interview(user: User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
     """Start fresh. Existing interviews are left intact, not overwritten."""
-    iv = Interview(user_id=user.id)
+    # Deal the hidden brief now, so the ground truth exists before the first
+    # word is spoken. The learner sees their own; the detectives never do.
+    brief = briefs_mod.deal()
+    state = InterviewState(brief_id=brief.id)
+
+    iv = Interview(user_id=user.id, brief_id=brief.id,
+                   phase=state.stage, engine_state=state.to_dict())
     db.add(iv)
     db.commit()
     db.refresh(iv)
     return _summary(iv)
+
+
+@router.get("/{interview_id}/brief", response_model=BriefOut)
+def get_brief(interview_id: str, user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    """The learner's own brief, for the panel they keep open during the interview."""
+    iv = _owned(interview_id, user, db)
+    brief = briefs_mod.get(iv.brief_id or "")
+    if brief is None:
+        raise HTTPException(status_code=404, detail="No brief for this interview")
+    return BriefOut(
+        id=brief.id, premise=brief.premise,
+        facts=[BriefFactOut(text=f.text) for f in brief.facts],
+        conceal=brief.conceal, awkward=brief.awkward,
+    )
 
 
 @router.get("/{interview_id}", response_model=InterviewDetail)
@@ -162,7 +221,8 @@ def get_interview(interview_id: str, user: User = Depends(get_current_user),
     detail = InterviewDetail(**_summary(iv).model_dump())
     detail.turns = [
         TurnOut(seq=t.seq, role=t.role, agent_name=t.agent_name, text=t.text,
-                modality=t.modality, phase=t.phase, emotion=t.emotion)
+                modality=t.modality, addressed_to=t.addressed_to or "learner",
+                exchange_id=t.exchange_id, phase=t.phase, emotion=t.emotion)
         for t in iv.turns
     ]
     return detail
@@ -181,33 +241,58 @@ def delete_interview(interview_id: str, user: User = Depends(get_current_user),
 def chat(interview_id: str, body: ChatRequest,
          user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     iv = _owned(interview_id, user, db)
-    agent = get_agent(iv)
+    if iv.outcome:
+        raise HTTPException(status_code=409, detail="This interview has concluded")
 
+    agent = get_agent(iv)
     is_silence = body.message.strip() == "[SILENCE]"
     result = agent.process_message(body.message)
 
+    stage = result.get("stage", iv.phase)
     seq = len(iv.turns)
+
     if not is_silence:
         db.add(Turn(interview_id=iv.id, seq=seq, role="user", text=body.message,
-                    modality=body.modality, phase=result.get("phase")))
+                    modality=body.modality, addressed_to="learner", phase=stage))
         seq += 1
 
-    db.add(Turn(interview_id=iv.id, seq=seq, role="agent",
-                agent_name=result.get("agent"), text=result.get("text", ""),
-                modality="synthesised", phase=result.get("phase"),
-                turn_number=result.get("turn"), emotion=result.get("emotion")))
+    utterances = result.get("utterances", [])
+    # An aside is one exchange with two speakers. Sharing an exchange_id keeps
+    # them grouped while leaving each line separately analysable.
+    exchange = str(uuid.uuid4()) if len(utterances) > 1 else None
+    for u in utterances:
+        db.add(Turn(interview_id=iv.id, seq=seq, role="agent",
+                    agent_name=u.get("speaker"), text=u.get("text", ""),
+                    modality="synthesised", addressed_to=u.get("addressed_to", "learner"),
+                    exchange_id=exchange, tactic=result.get("tactic"),
+                    phase=stage, turn_number=result.get("turn"),
+                    emotion=u.get("emotion")))
+        seq += 1
 
-    # Persist the agent's working state so this interview can be resumed.
-    iv.turn_count = agent.turn_count
+    # New structured claims, for the post-session assessment.
+    known = {c.text for c in iv.claims}
+    for c in agent.state.claims:
+        if c.text in known:
+            continue
+        db.add(ClaimRow(id=c.id, interview_id=iv.id, turn_seq=c.turn_seq,
+                        text=c.text, start_min=c.start_min, end_min=c.end_min,
+                        location=c.location, activity=c.activity,
+                        superseded_by=c.superseded_by,
+                        vouched_by_chen=1 if c.vouched_by_chen else 0))
+
+    # Persist the whole engine so the interview resumes exactly as left.
+    iv.engine_state = agent.state.to_dict()
+    iv.turn_count = agent.state.turn
     iv.player_name = agent.player_name
-    iv.last_agent = agent.last_agent
-    iv.escalation_score = agent.escalation_score
-    iv.contradiction_count = agent.contradiction_count
-    iv.phase = result.get("phase", iv.phase)
+    iv.last_agent = agent.state.last_speaker or iv.last_agent
+    iv.phase = stage
+    iv.outcome = result.get("outcome")
+    if iv.outcome:
+        iv.status = "completed"
     db.commit()
 
     return ChatResponse(
-        text=result.get("text", ""), agent=result.get("agent", "Reynolds"),
-        emotion=result.get("emotion"), phase=result.get("phase", iv.phase),
-        turn=result.get("turn", iv.turn_count), interview_id=iv.id,
+        utterances=[UtteranceOut(**u) for u in utterances],
+        phase=stage, turn=result.get("turn", iv.turn_count),
+        interview_id=iv.id, outcome=iv.outcome, tactic=result.get("tactic"),
     )

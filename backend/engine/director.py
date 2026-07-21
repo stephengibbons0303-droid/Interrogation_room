@@ -182,27 +182,42 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
 
 # ── pressure ─────────────────────────────────────────────────────────────────
 
-_PRESSURE_FOR = {"self": 0.12, "brief": 0.15, "evidence": 0.20}
+# Pressure may only come from things the detectives could actually perceive.
+#
+# A "brief" contradiction scores ZERO. It means the account departs from what
+# really happened - but on a concealing brief that IS the game: the learner is
+# supposed to be hiding something, and the detectives cannot see the brief. Only
+# the engine knows, and it uses that knowledge to decide the ending, not to
+# punish the lie as it is being told. Scoring it made pressure hit the ceiling in
+# seven turns purely for playing the part properly.
+_PRESSURE_FOR = {"self": 0.10, "brief": 0.0, "evidence": 0.15}
+
+# One bad turn should not end the interview. Several claims can clash with the
+# same story, and without a ceiling they compound into an instant conviction.
+_MAX_PRESSURE_PER_TURN = 0.22
 
 
 def update_pressure(state: InterviewState, new_contradictions: List[Contradiction],
                     analysis: TurnAnalysis, report: TimelineReport) -> None:
     """Move pressure and exculpation.
 
-    Only three things raise pressure: contradictions, unaccounted time, and
-    deliberate evasion. Language quality is deliberately absent - a learner
-    struggling for words is doing the thing the app exists to make them do.
+    Only things visible from across the table count: an account that changes,
+    an account that collides with evidence, unaccounted time, and deliberate
+    evasion. Language quality is deliberately absent - a learner struggling for
+    words is doing the thing the app exists to make them do.
     """
+    gain = 0.0
     for c in new_contradictions:
-        state.pressure += _PRESSURE_FOR.get(c.kind, 0.1)
+        gain += _PRESSURE_FOR.get(c.kind, 0.05)
 
     if report.gaps:
-        state.pressure += min(0.03 * len(report.gaps), 0.06)
+        gain += min(0.02 * len(report.gaps), 0.04)
     if report.impossible:
-        state.pressure += 0.05
-
+        gain += 0.05
     if analysis.evasive:
-        state.pressure += 0.08
+        gain += 0.06
+
+    state.pressure += min(gain, _MAX_PRESSURE_PER_TURN)
 
     # Detail and cooperation buy relief. Richness never subtracts, so a poor
     # answer costs nothing - it simply earns nothing.
@@ -279,13 +294,22 @@ def advance_stage(state: InterviewState, report: TimelineReport) -> None:
 
 
 def decide_outcome(state: InterviewState) -> Optional[str]:
-    """What happens to them. Only meaningful once Closure is reached."""
+    """What happens to them. Only meaningful once Closure is reached.
+
+    Judged on what the detectives actually got, not on what the engine knows.
+    A learner who conceals successfully and is never caught out walks - which is
+    the correct result: they beat the interview.
+    """
     if Stage(state.stage) is not Stage.CLOSURE:
         return None
-    unresolved = [c for c in state.contradictions if c.kind == "evidence"]
-    if state.pressure >= 0.65 and unresolved:
+
+    # Evidence actually put to them, and not explained away.
+    caught = [c for c in state.contradictions if c.kind == "evidence" and c.raised]
+    wobbled = [c for c in state.contradictions if c.kind == "self"]
+
+    if state.pressure >= 0.6 and caught:
         return Outcome.DETAINED.value
-    if state.pressure >= 0.35 or state.contradictions:
+    if state.pressure >= 0.3 or caught or len(wobbled) >= 2:
         return Outcome.UNDER_INVESTIGATION.value
     return Outcome.RELEASED.value
 

@@ -193,11 +193,19 @@ _ADDED_COLUMNS = {
 }
 
 
-def _ensure_columns() -> None:
-    """Add any missing columns in place. Idempotent, and safe to run at boot.
+# Retired columns. These were written and never read, and they are NOT NULL with
+# no default - so once they left the model, every insert failed. Dropping them is
+# the honest fix; leaving them would mean carrying dead state forever.
+_RETIRED_COLUMNS = {
+    "interviews": ["escalation_score", "contradiction_count"],
+}
 
-    Deliberately additive only: nothing is dropped or rewritten, so an existing
-    local database keeps its accounts and transcripts.
+
+def _ensure_columns() -> None:
+    """Bring an existing database up to the current shape. Idempotent.
+
+    Rows are never touched, so a local database keeps its accounts and
+    transcripts across the upgrade.
     """
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -210,6 +218,21 @@ def _ensure_columns() -> None:
                 if name not in present:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
                     print(f"  db: added {table}.{name}")
+
+        for table, names in _RETIRED_COLUMNS.items():
+            if table not in existing_tables:
+                continue
+            present = {c["name"] for c in inspector.get_columns(table)}
+            for name in names:
+                if name not in present:
+                    continue
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {name}"))
+                    print(f"  db: dropped {table}.{name}")
+                except Exception as e:
+                    # SQLite gained DROP COLUMN in 3.35. On anything older the
+                    # column stays; it is harmless once it is nullable.
+                    print(f"  db: could not drop {table}.{name} ({e})")
 
 
 def init_db() -> None:
