@@ -141,16 +141,15 @@ def _state_block(state: InterviewState, report: TimelineReport) -> str:
 
 def build_system_prompt(speaker: str, state: InterviewState, report: TimelineReport,
                         options: List[Tactic], disclosure=None,
-                        aside: bool = False, player_name: Optional[str] = None) -> str:
+                        aside: bool = False, closing: bool = False,
+                        player_name: Optional[str] = None) -> str:
     """Assemble the turn's instructions.
 
     Deliberately excludes the learner's brief. The detectives work from what has
     been said and what the police hold - nothing else.
     """
-    if aside:
-        who = ("You are writing BOTH detectives. DI James Reynolds and DS Sarah Chen "
-               "are discussing the subject with each other, in front of them, as though "
-               "they were not in the room.\n\n"
+    if aside or closing:
+        who = ("You are writing BOTH detectives. DI James Reynolds and DS Sarah Chen.\n\n"
                + REYNOLDS_PROFILE + "\n" + CHEN_PROFILE)
     else:
         who = PROFILES[speaker]
@@ -172,10 +171,36 @@ def build_system_prompt(speaker: str, state: InterviewState, report: TimelineRep
     aside_note = ""
     if aside:
         aside_note = """
-THIS TURN IS AN ASIDE. Write exactly two short utterances: the detectives talking
-TO EACH OTHER about the subject, not to them. Reynolds is sceptical, dry, ironic.
-Chen responds in character with her current stance. Neither addresses the subject
-directly. Set addressed_to to "partner" for both.
+THIS TURN IS AN ASIDE. Write exactly THREE utterances:
+
+  1. Reynolds, to his colleague ABOUT the subject - sceptical, dry, ironic.
+     addressed_to = "partner"
+  2. Chen, answering him in character with her current stance.
+     addressed_to = "partner"
+  3. One of them then TURNS BACK to the subject and puts a question to them.
+     Short. addressed_to = "learner"
+
+The third line is not optional. Conferring and then falling silent leaves the
+subject sitting there with nothing to answer, which is not how an interview
+works - the point of talking over someone is to then turn on them.
+"""
+
+    closing_note = ""
+    if closing:
+        closing_note = """
+THE INTERVIEW IS ENDING NOW. This is the last thing they will hear, so end it
+properly rather than stopping mid-flow. Write TWO utterances, both addressed_to
+"learner":
+
+  1. Reynolds closes formally: summarise where their account has left things,
+     state what happens next, and note the time for the tape. In character - if
+     he does not believe them, that should be audible without him saying so.
+  2. Chen has the final word, in whatever register her current stance calls for.
+     If she has been their advocate, this is the last thing that lands.
+
+Do NOT ask a question - nothing follows this. Do not announce an outcome or use
+words like released, detained or arrested; say what is happening in the room and
+let the rest be understood.
 """
 
     return f"""{who}
@@ -195,6 +220,7 @@ establishing the subject's movements between 5pm and midnight that day.
 CHOOSE ONE OF THESE TACTICS AND REPORT WHICH YOU USED:
 {tactic_block}
 {aside_note}
+{closing_note}
 {RULES}
 
 Also extract, from the subject's LAST message only:

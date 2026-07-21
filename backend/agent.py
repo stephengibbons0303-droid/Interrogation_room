@@ -223,7 +223,16 @@ class InterrogationAgent:
         prelim = analyse("" if is_silence else user_message)
 
         self.state.tick_cooldowns()
+
+        # Advance the stage BEFORE choosing what to say. Advancing afterwards
+        # meant the turn that ended the interview was still generated as a
+        # challenge question, and then it simply stopped - no closing exchange,
+        # no sign-off, just an outcome screen. Deciding the stage first means a
+        # closing turn is written as one.
+        dr.advance_stage(self.state, build_timeline(self.state.claims))
+
         ctx = dr.build_context(self.state, self.brief, prelim)
+        closing = Stage(self.state.stage) is Stage.CLOSURE
         speaker, reason = dr.select_speaker(ctx)
         options = dr.shortlist(ctx, speaker)
         aside = any(t.two_voices for t in options[:1])
@@ -232,7 +241,8 @@ class InterrogationAgent:
 
         system = prompts.build_system_prompt(
             speaker, self.state, ctx.timeline, options,
-            disclosure=disclosure, aside=aside, player_name=self.player_name)
+            disclosure=disclosure, aside=aside, closing=closing,
+            player_name=self.player_name)
 
         recall = self._recall(user_message)
         if recall:
@@ -264,7 +274,9 @@ class InterrogationAgent:
     def _apply(self, result: TurnOut, user_message: str, is_silence: bool,
                prelim, ctx, speaker: str, reason: str, disclosure) -> Dict[str, Any]:
         """Fold the model's reply back into engine state."""
-        utterances = [u for u in result.utterances if (u.text or "").strip()][:2]
+        # Up to three: an aside is two detectives conferring plus the one who
+        # then turns back to the subject.
+        utterances = [u for u in result.utterances if (u.text or "").strip()][:3]
         if not utterances:
             return self._mock(user_message)
 
@@ -320,8 +332,8 @@ class InterrogationAgent:
         dr.update_pressure(self.state, new_contradictions, final, ctx.timeline)
         stung = dr.update_chen(self.state, new_contradictions, prelim.struggling)
 
-        report = build_timeline(self.state.claims)
-        dr.advance_stage(self.state, report)
+        # The stage was settled at the top of the turn, so the outcome now
+        # follows a line that was actually written as a closing one.
         self.state.outcome = dr.decide_outcome(self.state)
 
         if not is_silence:

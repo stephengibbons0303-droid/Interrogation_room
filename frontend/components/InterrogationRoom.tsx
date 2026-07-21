@@ -291,6 +291,11 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         setHasStarted(true);
 
         if (resume) {
+            // Set BEFORE the await. Otherwise the briefing screen mounts during
+            // the transcript load and starts reading the brief aloud over the
+            // top of the detective.
+            setBriefed(true);
+
             // Replay what was already said rather than reopening. No audio:
             // the learner is picking up a thread, not being greeted again.
             setIsWaiting(true);
@@ -312,9 +317,6 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             } finally {
                 setIsWaiting(false);
             }
-            // Resuming skips the briefing - they were read it the first time,
-            // and the panel is still there if they want it.
-            setBriefed(true);
             return;
         }
         // A new interview goes to the briefing screen; beginInterrogation()
