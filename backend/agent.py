@@ -2,10 +2,32 @@ import os
 import random
 from typing import Dict, Any, List
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings, ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.embeddings import Embeddings
 from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
+
+
+class LocalEmbeddings(Embeddings):
+    """LangChain adapter over the ONNX MiniLM model bundled with chromadb.
+
+    Fallback for when there is no embedding deployment available - the Azure
+    resource currently only has a chat deployment, and embeddings need their own.
+    Runs locally on the already-installed onnxruntime: no key, no cost, no
+    network after the ~80 MB model is fetched once. Lower quality than
+    text-embedding-3-small, but this only has to surface semantically similar
+    prior statements for contradiction detection, not power a search engine.
+    """
+
+    def __init__(self):
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        self._fn = ONNXMiniLM_L6_V2()
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [[float(x) for x in vec] for vec in self._fn(list(texts))]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
 
 load_dotenv()
 
@@ -205,7 +227,6 @@ CHEN_SILENCE_STRATEGIES = [
 
 class InterrogationAgent:
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
         self.llm = None
         self.history: List[Dict[str, Any]] = []
         self.last_agent = "Reynolds"
@@ -215,15 +236,73 @@ class InterrogationAgent:
         self.escalation_score = 0  # Tracks how suspicious the player seems
         self.contradiction_count = 0
 
-        if self.api_key:
-            self.llm = ChatOpenAI(model="gpt-4o", temperature=0.75)
-            self.vector_store = Chroma(
-                collection_name="interrogation_memory",
-                embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
-                persist_directory="./chroma_db"
+        self.llm = self._build_llm()
+        if self.llm is None:
+            print("WARNING: No LLM configured. Falling back to Mock Mode.")
+            return
+
+        self.vector_store = self._build_vector_store()
+        if self.vector_store is None:
+            # Not fatal - process_message already guards on vector_store being
+            # None. We lose contradiction detection, not the interview.
+            print("WARNING: No embeddings configured - contradiction detection is OFF.")
+
+    def _build_llm(self):
+        """Azure OpenAI if configured, else OpenAI, else None (Mock Mode)."""
+        if os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_ENDPOINT"):
+            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+            print(f"LLM: Azure OpenAI, deployment '{deployment}'")
+            return AzureChatOpenAI(
+                azure_deployment=deployment,
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                temperature=0.75,
             )
+        if os.getenv("OPENAI_API_KEY"):
+            print("LLM: OpenAI gpt-4o")
+            return ChatOpenAI(model="gpt-4o", temperature=0.75)
+        return None
+
+    def _build_vector_store(self):
+        """Vector memory for contradiction detection. Needs a separate embedding
+        deployment on Azure - if there isn't one, we run without it."""
+        embeddings = None
+        tag = None
+        azure_embed = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        if azure_embed and os.getenv("AZURE_OPENAI_API_KEY"):
+            embeddings = AzureOpenAIEmbeddings(
+                azure_deployment=azure_embed,
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+            )
+            tag = "azure"
+        elif os.getenv("OPENAI_API_KEY"):
+            embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+            tag = "openai"
         else:
-            print("WARNING: No OPENAI_API_KEY found. Falling back to Mock Mode.")
+            # No hosted embeddings available - fall back to local rather than
+            # losing contradiction detection entirely.
+            try:
+                embeddings = LocalEmbeddings()
+                tag = "local"
+                print("Embeddings: local ONNX MiniLM (no embedding deployment found)")
+            except Exception as e:
+                print(f"WARNING: local embeddings unavailable ({e})")
+                return None
+
+        if embeddings is None:
+            return None
+        try:
+            # Collection is namespaced per embedding backend. Chroma fixes a
+            # collection's dimensionality at creation, and these models disagree
+            # (MiniLM 384 vs text-embedding-3-small 1536), so sharing one
+            # collection fails with a dimension mismatch on every write.
+            return Chroma(
+                collection_name=f"interrogation_memory_{tag}",
+                embedding_function=embeddings,
+                persist_directory="./chroma_db",
+            )
+        except Exception as e:
+            print(f"WARNING: vector store init failed ({e})")
+            return None
 
     def _get_current_phase(self) -> Dict:
         """Determine current narrative phase based on turn count."""
@@ -290,10 +369,15 @@ class InterrogationAgent:
             # Vector Memory Retrieval
             relevant_context = ""
             if self.vector_store and not is_silence and self.turn_count > 3:
-                results = self.vector_store.similarity_search(user_message, k=3)
-                if results:
-                    docs_content = [doc.page_content for doc in results]
-                    relevant_context = "\n".join([f"  - \"{content}\"" for content in docs_content])
+                # Memory is an enhancement, not a dependency - a vector store
+                # failure must not cost us the turn.
+                try:
+                    results = self.vector_store.similarity_search(user_message, k=3)
+                    if results:
+                        docs_content = [doc.page_content for doc in results]
+                        relevant_context = "\n".join([f"  - \"{content}\"" for content in docs_content])
+                except Exception as e:
+                    print(f"WARNING: memory recall failed, continuing without it ({e})")
 
             current_agent = self._determine_agent(is_silence)
             self.last_agent = current_agent
@@ -333,9 +417,14 @@ class InterrogationAgent:
                 "agent": current_agent
             })
 
-            # Save user message to vector DB after processing
+            # Save user message to vector DB after processing. Guarded for the
+            # same reason: this runs after a successful LLM call, so an
+            # unguarded failure here would throw away a perfectly good reply.
             if self.vector_store and not is_silence:
-                self.vector_store.add_texts(texts=[user_message])
+                try:
+                    self.vector_store.add_texts(texts=[user_message])
+                except Exception as e:
+                    print(f"WARNING: memory write failed ({e})")
 
             # Emotion mapping based on agent and phase
             if current_agent == "Reynolds":
