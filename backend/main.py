@@ -1,4 +1,6 @@
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -6,12 +8,29 @@ from pydantic import BaseModel
 import uvicorn
 import logging
 import httpx
-from agent import agent_instance
+
+import agent as agent_module
+import auth
+import sessions
+from db import init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    # Build the LLM and vector store up front so the first learner does not pay
+    # the cost, and so a misconfiguration is visible at boot rather than mid-interview.
+    agent_module.init_resources()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+app.include_router(auth.router)
+app.include_router(sessions.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,10 +46,6 @@ app.add_middleware(
 STT_URL = os.getenv("STT_URL", "http://127.0.0.1:7677/v1/audio/transcriptions")
 TTS_URL = os.getenv("TTS_URL", "http://127.0.0.1:7678/v1/audio/speech")
 
-class ChatRequest(BaseModel):
-    message: str
-    session_id: str
-
 class TTSRequest(BaseModel):
     text: str
     voice: str = "Reynolds"
@@ -39,11 +54,9 @@ class TTSRequest(BaseModel):
 async def root():
     return {"status": "ok", "service": "Interrogation Learning System Backend"}
 
-@app.post("/chat")
-async def chat_endpoint(request: ChatRequest):
-    logger.info(f"Received message: {request.message} from session: {request.session_id}")
-    response = agent_instance.process_message(request.message)
-    return response
+# NOTE: the old unauthenticated POST /chat is gone. It ignored its session_id and
+# routed every learner through one shared agent. Chat is now
+# POST /interviews/{id}/chat - authenticated, and scoped to one interview.
 
 @app.post("/tts")
 async def tts_endpoint(request: TTSRequest):

@@ -8,6 +8,13 @@ venv/
 .env.local
 .DS_Store
 
+# Local databases. These hold real user data - password hashes and learner
+# interview transcripts - and are recreated on first run. Never commit them.
+*.db
+*.sqlite
+*.sqlite3
+!backend/chroma_db/**
+
 # Node
 node_modules/
 npm-debug.log*

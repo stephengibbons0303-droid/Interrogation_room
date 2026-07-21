@@ -225,84 +225,117 @@ CHEN_SILENCE_STRATEGIES = [
 ]
 
 
-class InterrogationAgent:
-    def __init__(self):
-        self.llm = None
-        self.history: List[Dict[str, Any]] = []
-        self.last_agent = "Reynolds"
-        self.turn_count = 0
-        self.player_name = None
-        self.vector_store = None
-        self.escalation_score = 0  # Tracks how suspicious the player seems
-        self.contradiction_count = 0
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED RESOURCES
+#
+# The LLM client and the vector store are expensive to construct and safe to
+# share, so they are built once per process. Only conversation state is
+# per-interview - see InterrogationAgent below.
+# ─────────────────────────────────────────────────────────────────────────────
 
-        self.llm = self._build_llm()
-        if self.llm is None:
-            print("WARNING: No LLM configured. Falling back to Mock Mode.")
-            return
+_LLM = None
+_VECTOR_STORE = None
+_RESOURCES_READY = False
 
-        self.vector_store = self._build_vector_store()
-        if self.vector_store is None:
-            # Not fatal - process_message already guards on vector_store being
-            # None. We lose contradiction detection, not the interview.
-            print("WARNING: No embeddings configured - contradiction detection is OFF.")
 
-    def _build_llm(self):
-        """Azure OpenAI if configured, else OpenAI, else None (Mock Mode)."""
-        if os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_ENDPOINT"):
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-            print(f"LLM: Azure OpenAI, deployment '{deployment}'")
-            return AzureChatOpenAI(
-                azure_deployment=deployment,
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-                temperature=0.75,
-            )
-        if os.getenv("OPENAI_API_KEY"):
-            print("LLM: OpenAI gpt-4o")
-            return ChatOpenAI(model="gpt-4o", temperature=0.75)
+def _build_llm():
+    """Azure OpenAI if configured, else OpenAI, else None (Mock Mode)."""
+    if os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_ENDPOINT"):
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+        print(f"LLM: Azure OpenAI, deployment '{deployment}'")
+        return AzureChatOpenAI(
+            azure_deployment=deployment,
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+            temperature=0.75,
+        )
+    if os.getenv("OPENAI_API_KEY"):
+        print("LLM: OpenAI gpt-4o")
+        return ChatOpenAI(model="gpt-4o", temperature=0.75)
+    return None
+
+
+def _build_vector_store():
+    """Vector memory for contradiction detection. Needs a separate embedding
+    deployment on Azure - if there isn't one, we fall back to local."""
+    embeddings = None
+    tag = None
+    azure_embed = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+    if azure_embed and os.getenv("AZURE_OPENAI_API_KEY"):
+        embeddings = AzureOpenAIEmbeddings(
+            azure_deployment=azure_embed,
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+        )
+        tag = "azure"
+    elif os.getenv("OPENAI_API_KEY"):
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        tag = "openai"
+    else:
+        # No hosted embeddings available - fall back to local rather than
+        # losing contradiction detection entirely.
+        try:
+            embeddings = LocalEmbeddings()
+            tag = "local"
+            print("Embeddings: local ONNX MiniLM (no embedding deployment found)")
+        except Exception as e:
+            print(f"WARNING: local embeddings unavailable ({e})")
+            return None
+
+    if embeddings is None:
+        return None
+    try:
+        # Collection is namespaced per embedding backend. Chroma fixes a
+        # collection's dimensionality at creation, and these models disagree
+        # (MiniLM 384 vs text-embedding-3-small 1536), so sharing one
+        # collection fails with a dimension mismatch on every write.
+        return Chroma(
+            collection_name=f"interrogation_memory_{tag}",
+            embedding_function=embeddings,
+            persist_directory="./chroma_db",
+        )
+    except Exception as e:
+        print(f"WARNING: vector store init failed ({e})")
         return None
 
-    def _build_vector_store(self):
-        """Vector memory for contradiction detection. Needs a separate embedding
-        deployment on Azure - if there isn't one, we run without it."""
-        embeddings = None
-        tag = None
-        azure_embed = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
-        if azure_embed and os.getenv("AZURE_OPENAI_API_KEY"):
-            embeddings = AzureOpenAIEmbeddings(
-                azure_deployment=azure_embed,
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-            )
-            tag = "azure"
-        elif os.getenv("OPENAI_API_KEY"):
-            embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-            tag = "openai"
-        else:
-            # No hosted embeddings available - fall back to local rather than
-            # losing contradiction detection entirely.
-            try:
-                embeddings = LocalEmbeddings()
-                tag = "local"
-                print("Embeddings: local ONNX MiniLM (no embedding deployment found)")
-            except Exception as e:
-                print(f"WARNING: local embeddings unavailable ({e})")
-                return None
 
-        if embeddings is None:
-            return None
-        try:
-            # Collection is namespaced per embedding backend. Chroma fixes a
-            # collection's dimensionality at creation, and these models disagree
-            # (MiniLM 384 vs text-embedding-3-small 1536), so sharing one
-            # collection fails with a dimension mismatch on every write.
-            return Chroma(
-                collection_name=f"interrogation_memory_{tag}",
-                embedding_function=embeddings,
-                persist_directory="./chroma_db",
-            )
-        except Exception as e:
-            print(f"WARNING: vector store init failed ({e})")
-            return None
+def init_resources() -> None:
+    """Build the shared LLM and vector store once. Safe to call repeatedly."""
+    global _LLM, _VECTOR_STORE, _RESOURCES_READY
+    if _RESOURCES_READY:
+        return
+    _RESOURCES_READY = True
+    _LLM = _build_llm()
+    if _LLM is None:
+        print("WARNING: No LLM configured. Falling back to Mock Mode.")
+        return
+    _VECTOR_STORE = _build_vector_store()
+    if _VECTOR_STORE is None:
+        # Not fatal - process_message guards on vector_store being None. We
+        # lose contradiction detection, not the interview.
+        print("WARNING: No embeddings configured - contradiction detection is OFF.")
+
+
+class InterrogationAgent:
+    """One live interrogation.
+
+    Constructed per interview and rehydrated from persisted state, so a learner
+    can leave and resume, and nothing is lost across a server restart. Several
+    of these coexist - the shared LLM and vector store are process-level.
+    """
+
+    def __init__(self, interview_id: str = None, history: List[Dict[str, Any]] = None,
+                 turn_count: int = 0, player_name: str = None,
+                 last_agent: str = "Reynolds", escalation_score: int = 0,
+                 contradiction_count: int = 0):
+        init_resources()
+        self.interview_id = interview_id
+        self.llm = _LLM
+        self.vector_store = _VECTOR_STORE
+        self.history: List[Dict[str, Any]] = history if history is not None else []
+        self.last_agent = last_agent
+        self.turn_count = turn_count
+        self.player_name = player_name
+        self.escalation_score = escalation_score  # how suspicious the player seems
+        self.contradiction_count = contradiction_count
 
     def _get_current_phase(self) -> Dict:
         """Determine current narrative phase based on turn count."""
@@ -372,7 +405,13 @@ class InterrogationAgent:
                 # Memory is an enhancement, not a dependency - a vector store
                 # failure must not cost us the turn.
                 try:
-                    results = self.vector_store.similarity_search(user_message, k=3)
+                    # Scoped to this interview. Without the filter every
+                    # learner's statements share one pool and the detectives
+                    # would confront one witness with another's contradiction.
+                    results = self.vector_store.similarity_search(
+                        user_message, k=3,
+                        filter={"interview_id": self.interview_id},
+                    )
                     if results:
                         docs_content = [doc.page_content for doc in results]
                         relevant_context = "\n".join([f"  - \"{content}\"" for content in docs_content])
@@ -422,7 +461,10 @@ class InterrogationAgent:
             # unguarded failure here would throw away a perfectly good reply.
             if self.vector_store and not is_silence:
                 try:
-                    self.vector_store.add_texts(texts=[user_message])
+                    self.vector_store.add_texts(
+                        texts=[user_message],
+                        metadatas=[{"interview_id": self.interview_id or "unknown"}],
+                    )
                 except Exception as e:
                     print(f"WARNING: memory write failed ({e})")
 
@@ -573,5 +615,7 @@ This is turn {self.turn_count} of the interview. Respond in character as {agent_
         }
 
 
-# Singleton
-agent_instance = InterrogationAgent()
+# No module-level singleton. One shared agent meant every concurrent learner
+# shared a single interview - one witness's answers advanced another's turn
+# counter, and the detectives addressed them by the wrong name. Agents are now
+# created per interview by sessions.py.
