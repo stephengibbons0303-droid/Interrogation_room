@@ -117,6 +117,11 @@ class InterviewState:
     speaker_counts: Dict[str, int] = field(default_factory=lambda: {"Reynolds": 0, "Chen": 0})
     asides_this_stage: int = 0
 
+    # Kept as first-class fields rather than stashed in `cooldowns`, which
+    # tick_cooldowns() decrements and prunes every turn.
+    last_speaker: Optional[str] = None
+    consecutive_speaker: int = 0
+
     # Consecutive turns where the learner did not address the question. Used to
     # back off rather than escalate: a learner losing the thread of overheard
     # dialogue is a comprehension problem, not evasion.
