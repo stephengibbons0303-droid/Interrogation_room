@@ -28,6 +28,8 @@ export interface InterviewSummary {
     created_at?: string | null;
     updated_at?: string | null;
     preview?: string | null;
+    /** Set once the interview has concluded: released, under_investigation, detained. */
+    outcome?: string | null;
 }
 
 export interface TurnOut {
@@ -36,6 +38,10 @@ export interface TurnOut {
     agent_name?: string | null;
     text: string;
     modality?: string | null;
+    /** "learner" when spoken to them, "partner" when the detectives confer
+     *  in front of them. Overheard speech is a different listening task. */
+    addressed_to?: string | null;
+    exchange_id?: string | null;
     phase?: string | null;
     emotion?: string | null;
 }
@@ -44,13 +50,29 @@ export interface InterviewDetail extends InterviewSummary {
     turns: TurnOut[];
 }
 
-export interface ChatReply {
+export interface Utterance {
+    speaker: string;
     text: string;
-    agent: string;
+    addressed_to: string;
     emotion?: string | null;
+}
+
+export interface ChatReply {
+    /** One utterance normally; two when the detectives confer with each other. */
+    utterances: Utterance[];
     phase: string;
     turn: number;
     interview_id: string;
+    outcome?: string | null;
+    tactic?: string | null;
+}
+
+export interface Brief {
+    id: string;
+    premise: string;
+    facts: { text: string }[];
+    conceal?: string | null;
+    awkward?: string | null;
 }
 
 /** How the learner produced a turn. Recorded per turn because the post-session
@@ -143,6 +165,7 @@ export async function login(email: string, password: string): Promise<void> {
 
 export const me = () => request<Me>('/auth/me');
 export const listInterviews = () => request<InterviewSummary[]>('/interviews');
+export const getBrief = (id: string) => request<Brief>(`/interviews/${id}/brief`);
 export const createInterview = () => request<InterviewSummary>('/interviews', { method: 'POST' });
 export const getInterview = (id: string) => request<InterviewDetail>(`/interviews/${id}`);
 export const deleteInterview = (id: string) =>

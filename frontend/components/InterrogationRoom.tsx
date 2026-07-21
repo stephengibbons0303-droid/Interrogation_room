@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
-import { getInterview, sendMessage, type Modality } from '../lib/api';
+import BriefPanel from './BriefPanel';
+import { getInterview, sendMessage, type Modality, type Utterance } from '../lib/api';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 
@@ -13,6 +14,11 @@ interface Message {
     emotion?: string;
     phase?: string;
     turn?: number;
+    /** "partner" means the detectives were talking to each other about the
+     *  learner rather than to them - rendered differently so they can see it. */
+    addressedTo?: string;
+    /** Groups the two halves of an aside. */
+    exchangeId?: string;
 }
 
 interface Props {
@@ -31,8 +37,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
-    const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
+    const [currentPhase, setCurrentPhase] = useState("engage");
     const [hasStarted, setHasStarted] = useState(false);
+    const [outcome, setOutcome] = useState<string | null>(null);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
@@ -41,13 +48,22 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
 
     // Fetch TTS audio from backend and play it via streaming
     // onStart fires when audio actually begins playing (for syncing text reveal)
-    const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void, onStart?: () => void) => {
+    const playAgentAudio = useCallback(async (
+        segments: { text: string; voice: string }[],
+        onEnd?: () => void, onStart?: () => void,
+    ) => {
         try {
             setIsSpeaking(true);
+            // An aside is two speakers. The backend renders them into a single
+            // wav, so playback here is identical to a single line - no
+            // sequencing, and the halves cannot arrive out of order.
             const response = await fetch(`${BACKEND_URL}/tts`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, voice: agentName }),
+                body: JSON.stringify(
+                    segments.length > 1
+                        ? { segments }
+                        : { text: segments[0]?.text ?? '', voice: segments[0]?.voice ?? 'Reynolds' }),
             });
 
             if (!response.ok) {
@@ -96,7 +112,12 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
         if (isListening) {
-            const delay = 12000 + Math.random() * 8000;
+            // 4-8s. The research puts the point where silence starts to bite at
+            // about four seconds, and the project's own design doc specifies
+            // random(4,8). The previous 12-20s left a learner floundering in
+            // dead air for the better part of twenty seconds before anyone
+            // helped, which reads as abandonment rather than pressure.
+            const delay = 4000 + Math.random() * 4000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
             }, delay);
@@ -116,26 +137,42 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             // Logged as 'silence' rather than a learner utterance so the
             // post-session assessment does not read it as production.
             const data = await sendMessage(interviewId, "[SILENCE]", 'silence');
-
-            if (data.phase) setCurrentPhase(data.phase);
-
-            const agentMsg: Message = {
-                role: 'agent',
-                content: data.text,
-                agentName: data.agent,
-                emotion: data.emotion ?? undefined,
-                phase: data.phase,
-                turn: data.turn
-            };
-
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
-                setMessages(prev => [...prev, agentMsg]);
-                setIsWaiting(false);
-            });
+            receive(data.utterances, data.phase, data.turn, data.outcome ?? null,
+                    autoStartMic);
         } catch (error) {
             console.error("Error sending silence trigger:", error);
             setIsWaiting(false);
         }
+    };
+
+    /** Show and speak a reply, which is one utterance or - for an aside - two. */
+    const receive = (
+        utterances: Utterance[], phase: string, turn: number,
+        newOutcome: string | null, onEnd?: () => void,
+    ) => {
+        if (phase) setCurrentPhase(phase);
+
+        const exchangeId = utterances.length > 1 ? `x-${Date.now()}` : undefined;
+        const msgs: Message[] = utterances.map(u => ({
+            role: 'agent',
+            content: u.text,
+            agentName: u.speaker,
+            emotion: u.emotion ?? undefined,
+            phase, turn,
+            addressedTo: u.addressed_to,
+            exchangeId,
+        }));
+
+        const segments = utterances.map(u => ({ text: u.text, voice: u.speaker }));
+
+        // Hold the text until audio starts, so eyes and ears stay together.
+        playAgentAudio(segments, () => {
+            if (newOutcome) setOutcome(newOutcome);
+            if (onEnd && !newOutcome) onEnd();
+        }, () => {
+            setMessages(prev => [...prev, ...msgs]);
+            setIsWaiting(false);
+        });
     };
 
     const handleSendMessage = async (textOverride?: string, modality: Modality = 'typed') => {
@@ -155,24 +192,8 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
 
         try {
             const data = await sendMessage(interviewId, textToSend, modality);
-
-            if (data.phase) setCurrentPhase(data.phase);
-
-            const agentMsg: Message = {
-                role: 'agent',
-                content: data.text,
-                agentName: data.agent,
-                emotion: data.emotion ?? undefined,
-                phase: data.phase,
-                turn: data.turn
-            };
-
-            // Hold text until audio starts playing — keeps eyes and ears in sync
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
-                setMessages(prev => [...prev, agentMsg]);
-                setIsWaiting(false);
-            });
-
+            receive(data.utterances, data.phase, data.turn, data.outcome ?? null,
+                    autoStartMic);
         } catch (error) {
             console.error("Error sending message:", error);
             setIsWaiting(false);
@@ -241,8 +262,11 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                     agentName: t.agent_name ?? undefined,
                     emotion: t.emotion ?? undefined,
                     phase: t.phase ?? undefined,
+                    addressedTo: t.addressed_to ?? 'learner',
+                    exchangeId: t.exchange_id ?? undefined,
                 })));
                 if (detail.phase) setCurrentPhase(detail.phase);
+                if (detail.outcome) setOutcome(detail.outcome);
             } catch {
                 setErrorMsg("Could not load this interview.");
             } finally {
@@ -260,7 +284,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         setIsWaiting(true);
 
         setTimeout(() => {
-            playAgentAudio(openingMsg.content, 'Reynolds', undefined, () => {
+            playAgentAudio([{ text: openingMsg.content, voice: 'Reynolds' }], undefined, () => {
                 setMessages([openingMsg]);
                 setIsWaiting(false);
             });
@@ -375,6 +399,59 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         );
     }
 
+    // The interview has concluded. What they said decided this.
+    if (outcome) {
+        const copy: Record<string, { title: string; line: string; colour: string }> = {
+            released: {
+                title: 'Released',
+                line: 'Your account held. You are free to go, with thanks for your time.',
+                colour: 'var(--teal)',
+            },
+            under_investigation: {
+                title: 'Released under investigation',
+                line: 'You are free to go for now. Enquiries are continuing, and they will want to speak to you again.',
+                colour: 'var(--amber)',
+            },
+            detained: {
+                title: 'Detained',
+                line: 'Your account did not survive what they had. You are not going home tonight.',
+                colour: 'var(--red-accent)',
+            },
+        };
+        const o = copy[outcome] ?? copy.under_investigation;
+        return (
+            <div className="flex flex-col h-screen items-center justify-center px-6"
+                style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
+                <div className="scanline-overlay" />
+                <div className="text-center max-w-md space-y-4">
+                    <p className="text-xs font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--text-muted)' }}>
+                        Interview concluded
+                    </p>
+                    <h1 className="text-lg font-bold tracking-widest font-mono uppercase"
+                        style={{ color: o.colour }}>
+                        {o.title}
+                    </h1>
+                    <p className="text-sm font-mono leading-relaxed"
+                        style={{ color: 'var(--text-secondary)' }}>
+                        {o.line}
+                    </p>
+                    <button
+                        onClick={onExit}
+                        className="mt-6 px-8 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                        style={{
+                            background: 'var(--surface-raised)',
+                            border: '1px solid var(--border-bright)',
+                            color: 'var(--text-secondary)',
+                        }}
+                    >
+                        Back to interviews
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col h-screen" style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
             {/* Scanline effect */}
@@ -419,7 +496,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                             border: '1px solid var(--amber-dim)'
                         }}
                     >
-                        {currentPhase}
+                        {currentPhase.replace(/_/g, ' ').toUpperCase()}
                     </span>
                     <div className="flex items-center gap-1.5">
                         <span
@@ -432,6 +509,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                     </div>
                 </div>
             </div>
+
+            {/* The learner's own brief, within reach throughout */}
+            <BriefPanel interviewId={interviewId} />
 
             {/* Chat Area */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
@@ -450,8 +530,14 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                             </div>
                         ) : (
                             <div
-                                className="max-w-2xl px-4 py-3 rounded-lg rounded-bl-none"
-                                style={{
+                                className={`max-w-2xl px-4 py-3 rounded-lg ${msg.addressedTo === 'partner' ? 'ml-8' : 'rounded-bl-none'}`}
+                                style={msg.addressedTo === 'partner' ? {
+                                    // They are being talked ABOUT, not to. Recessed and
+                                    // dashed so it reads as overheard across the table.
+                                    background: 'transparent',
+                                    border: '1px dashed var(--border-bright)',
+                                    opacity: 0.85,
+                                } : {
                                     background: 'var(--surface)',
                                     borderLeft: `3px solid ${getAgentBorderColor(msg.agentName)}`,
                                     borderTop: '1px solid var(--border)',
@@ -467,7 +553,13 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                                         >
                                             {msg.agentName === 'Reynolds' ? 'DI Reynolds' : msg.agentName === 'Chen' ? 'DS Chen' : msg.agentName}
                                         </span>
-                                        {msg.emotion && (
+                                        {msg.addressedTo === 'partner' && (
+                                            <span className="text-xs font-mono italic"
+                                                style={{ color: 'var(--text-muted)' }}>
+                                                — not to you —
+                                            </span>
+                                        )}
+                                        {msg.emotion && msg.addressedTo !== 'partner' && (
                                             <span
                                                 className="text-xs font-mono"
                                                 style={{ color: 'var(--text-muted)' }}
@@ -478,7 +570,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                                     </div>
                                     <button
                                         onClick={() => {
-                                            playAgentAudio(msg.content, msg.agentName || 'Reynolds');
+                                            playAgentAudio([{ text: msg.content, voice: msg.agentName || 'Reynolds' }]);
                                         }}
                                         className="text-xs px-2 py-0.5 rounded transition-colors font-mono"
                                         style={{
@@ -491,7 +583,12 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                                         PLAY
                                     </button>
                                 </div>
-                                <p className="text-base leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                                <p className="text-base leading-relaxed"
+                                    style={{
+                                        color: msg.addressedTo === 'partner'
+                                            ? 'var(--text-secondary)' : 'var(--text-primary)',
+                                        fontStyle: msg.addressedTo === 'partner' ? 'italic' : 'normal',
+                                    }}>
                                     {msg.content}
                                 </p>
                             </div>

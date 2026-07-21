@@ -150,16 +150,30 @@ export default function InterviewPicker({ email, onOpen, onSignOut }: Props) {
                                             style={{ color: 'var(--text-primary)' }}>
                                             {iv.player_name || 'Unnamed witness'}
                                         </span>
-                                        <span
-                                            className="text-xs font-mono px-2 py-0.5 rounded"
-                                            style={{
-                                                color: 'var(--amber)',
-                                                background: 'var(--amber-glow)',
-                                                border: '1px solid var(--amber-dim)',
-                                            }}
-                                        >
-                                            {iv.phase}
-                                        </span>
+                                        {iv.outcome ? (
+                                            <span
+                                                className="text-xs font-mono px-2 py-0.5 rounded uppercase"
+                                                style={{
+                                                    color: iv.outcome === 'released' ? 'var(--teal)'
+                                                        : iv.outcome === 'detained' ? 'var(--red-accent)'
+                                                            : 'var(--amber)',
+                                                    border: '1px solid currentColor',
+                                                }}
+                                            >
+                                                {iv.outcome.replace(/_/g, ' ')}
+                                            </span>
+                                        ) : (
+                                            <span
+                                                className="text-xs font-mono px-2 py-0.5 rounded"
+                                                style={{
+                                                    color: 'var(--amber)',
+                                                    background: 'var(--amber-glow)',
+                                                    border: '1px solid var(--amber-dim)',
+                                                }}
+                                            >
+                                                {iv.phase.replace(/_/g, ' ').toUpperCase()}
+                                            </span>
+                                        )}
                                     </div>
                                     <div className="text-xs font-mono mt-1 truncate"
                                         style={{ color: 'var(--text-muted)' }}>
@@ -173,11 +187,12 @@ export default function InterviewPicker({ email, onOpen, onSignOut }: Props) {
                                         className="px-4 py-2 rounded-lg font-bold text-xs tracking-wider font-mono uppercase"
                                         style={{
                                             background: 'var(--surface-raised)',
-                                            border: '1px solid var(--teal)',
-                                            color: 'var(--teal)',
+                                            border: `1px solid ${iv.outcome ? 'var(--border-bright)' : 'var(--teal)'}`,
+                                            color: iv.outcome ? 'var(--text-muted)' : 'var(--teal)',
                                         }}
                                     >
-                                        Resume
+                                        {/* A concluded interview can be re-read but not continued. */}
+                                        {iv.outcome ? 'Review' : 'Resume'}
                                     </button>
                                     <button
                                         onClick={() => remove(iv.id)}
