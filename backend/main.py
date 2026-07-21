@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,9 +47,18 @@ app.add_middleware(
 STT_URL = os.getenv("STT_URL", "http://127.0.0.1:7677/v1/audio/transcriptions")
 TTS_URL = os.getenv("TTS_URL", "http://127.0.0.1:7678/v1/audio/speech")
 
-class TTSRequest(BaseModel):
+class TTSSegment(BaseModel):
     text: str
     voice: str = "Reynolds"
+
+
+class TTSRequest(BaseModel):
+    # A normal turn is one line. An aside is two speakers, sent as segments and
+    # returned as a single wav so the client plays it exactly as it plays a
+    # single line - no sequencing in the browser, no gap mid-exchange.
+    text: Optional[str] = None
+    voice: str = "Reynolds"
+    segments: Optional[List[TTSSegment]] = None
 
 @app.get("/")
 async def root():
@@ -67,13 +77,16 @@ async def tts_endpoint(request: TTSRequest):
     synthesised before audio starts. Roughly 3.5-4.5x faster than realtime, so a
     typical 20-word line costs ~1.7s of silence up front.
     """
+    if request.segments:
+        payload = {"segments": [s.model_dump() for s in request.segments]}
+    elif request.text:
+        payload = {"input": request.text, "voice": request.voice}
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'text' or 'segments'")
+
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                TTS_URL,
-                json={"input": request.text, "voice": request.voice},
-                timeout=30.0,
-            )
+            response = await client.post(TTS_URL, json=payload, timeout=60.0)
     except httpx.TimeoutException:
         logger.error("TTS request timed out")
         raise HTTPException(status_code=504, detail="TTS request timed out")

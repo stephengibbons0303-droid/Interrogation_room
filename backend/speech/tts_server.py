@@ -63,24 +63,67 @@ def _clean(t):
     return re.sub(r"\s+", " ", t).strip()
 
 
-def synth_wav(text, voice):
+# Beat of silence between speakers in an aside. Without it the two voices run
+# together and it stops sounding like two people.
+GAP_MS = 280
+
+
+def _resolve(voice):
     requested = (voice or "").strip()
-    voice = VOICE_MAP.get(requested, requested) or DEFAULT_VOICE
-    if AVAILABLE and voice not in AVAILABLE:
+    resolved = VOICE_MAP.get(requested, requested) or DEFAULT_VOICE
+    if AVAILABLE and resolved not in AVAILABLE:
         # Unknown character or voice id - e.g. the agent's Mock Mode speaks as
         # "System". Don't fail the whole line over casting; log and carry on.
         print(f"[tts] unknown voice {requested!r}, using {DEFAULT_VOICE}", flush=True)
-        voice = DEFAULT_VOICE
-    lang = "en-gb" if voice.startswith("b") else "en-us"
+        resolved = DEFAULT_VOICE
+    return resolved
+
+
+def synth_pcm(text, voice):
+    """Synthesise one line to 16-bit PCM, without a WAV header."""
+    v = _resolve(voice)
+    lang = "en-gb" if v.startswith("b") else "en-us"
     with _lock:
-        samples, sr = KOKORO.create(_clean(text), voice=voice, speed=1.0, lang=lang)
+        samples, sr = KOKORO.create(_clean(text), voice=v, speed=1.0, lang=lang)
     pcm = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
-    pcm = (pcm * 32767.0).astype("<i2")
+    return (pcm * 32767.0).astype("<i2"), int(sr)
+
+
+def _wav(pcm, sr):
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(int(sr))
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
         w.writeframes(pcm.tobytes())
     return buf.getvalue()
+
+
+def synth_wav(text, voice):
+    pcm, sr = synth_pcm(text, voice)
+    return _wav(pcm, sr)
+
+
+def synth_segments(segments):
+    """Render an ordered list of {text, voice} into ONE wav.
+
+    Concatenating the raw PCM and wrapping it once means the client receives a
+    single blob it can play exactly as it plays a single line - no sequencing in
+    the browser, no gap while a second request goes out, and no chance of the
+    two halves of an exchange arriving out of order.
+    """
+    chunks, rate = [], None
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        pcm, sr = synth_pcm(text, seg.get("voice"))
+        if rate is None:
+            rate = sr
+        if chunks:
+            chunks.append(np.zeros(int(rate * GAP_MS / 1000), dtype="<i2"))
+        chunks.append(pcm)
+    if not chunks:
+        raise ValueError("no speakable segments")
+    return _wav(np.concatenate(chunks), rate)
 
 
 class H(BaseHTTPRequestHandler):
@@ -114,9 +157,16 @@ class H(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
             req = json.loads(self.rfile.read(n) or b"{}")
+
+            # An aside is two speakers in one turn, so accept an ordered list of
+            # segments as well as a single line.
+            segments = req.get("segments")
+            if segments:
+                return self._send(200, synth_segments(segments), "audio/wav")
+
             text = (req.get("input") or "").strip()
             if not text:
-                return self._json(400, {"error": "missing 'input'"})
+                return self._json(400, {"error": "missing 'input' or 'segments'"})
             self._send(200, synth_wav(text, req.get("voice")), "audio/wav")
         except Exception as e:
             self._json(500, {"error": str(e)})
