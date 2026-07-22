@@ -188,10 +188,17 @@ _ALL: List[Tactic] = [
            "later. Rehearsed accounts survive linear questioning; they do not survive this.",
            precondition=lambda c: len(c.state.topics_covered) >= 2,
            cooldown=6),
+    # No fixed examples here on purpose. It used to list three - what was on
+    # their left, what the staff looked like, which way the queue faced - and
+    # the model reached for the first one every time, so a learner heard "what
+    # was on your left" repeatedly. A technique whose whole value is being
+    # unforeseeable cannot have a stock question.
     Tactic("unanticipated_question", "Reynolds", [Stage.PROBE, Stage.CHALLENGE],
-           "Ask something they cannot have prepared: what was on their left as they walked "
-           "in, what the staff looked like, which way the queue faced.",
-           precondition=_timeline_ready, cooldown=5),
+           "Ask one peripheral thing they cannot have prepared and would only know by "
+           "having been there - the layout, the other people, the noise, the weather, how "
+           "they paid, where they sat. Pick a DIFFERENT kind of detail from any you have "
+           "asked before this interview; never repeat an earlier question of this sort.",
+           precondition=_timeline_ready, cooldown=8),
 
     # The technique this whole rebuild was prompted by. It needs an account with
     # something IN it, not merely one that covers the evening: the jeopardy is

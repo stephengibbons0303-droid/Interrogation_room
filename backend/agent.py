@@ -8,6 +8,7 @@ Character material lives in prompts.py, techniques in engine/tactics.py. What
 remains here is the bit that talks to Azure.
 """
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -252,12 +253,20 @@ class InterrogationAgent:
             system += ("\n\nTHE SUBJECT HAS SAID NOTHING for a long moment. React to the "
                        "silence itself. Do not ask several questions.")
 
+        # Timed because "it felt slow on turn 2" is not something anyone can act
+        # on. Turn 1 never reaches here - the opening line is hard-coded - so
+        # turn 2 is the first call this process makes and pays whatever cold
+        # start there is. Logging it says whether that is the whole story.
+        started = time.perf_counter()
         try:
             result: TurnOut = self.llm.with_structured_output(TurnOut).invoke(
                 [SystemMessage(content=system), *self._context_messages()])
         except Exception as e:
             print(f"Error invoking LLM: {e}")
             return self._mock(user_message)
+        print(f"[turn {self.state.turn}] LLM {time.perf_counter() - started:.2f}s "
+              f"({len(system)} chars of system prompt, "
+              f"{len(self.history[-14:])} messages of history)")
 
         return self._apply(result, user_message, is_silence, prelim, ctx,
                            speaker, reason, disclosure)

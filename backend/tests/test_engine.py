@@ -440,7 +440,7 @@ sparse = [Claim(id="1", turn_seq=1, text="I was at the cafe.",
 d = density.assess(sparse)["the cafe"]
 check("a bare topic is thin", d.thin, f"score={d.score}")
 check("and it names what is missing",
-      any("nobody named" in m for m in d.missing()), str(d.missing()))
+      any("nobody named" in m.lower() for m in d.missing()), str(d.missing()))
 check("it asks for a time when none was given",
       any("clock time" in m for m in d.missing()), str(d.missing()))
 
@@ -475,6 +475,32 @@ check("one substantial topic still counts, whatever the model labelled it",
       f"score={density.assess(one_big_topic)['the evening'].score}")
 check("but a thin single topic never does",
       not density.testable(sparse))
+
+# Probing and testing are separate questions. A freshly raised topic must not
+# re-lock reverse chronology over an account already worth attacking.
+mixed = list(full_rich) + [Claim(id="new", turn_seq=9, text="and a pub after",
+                                 start_min=23 * 60, end_min=23 * 60 + 30,
+                                 location="home", topic="the pub")]
+check("a new thin topic still gets pressed",
+      any(d.topic == "the pub" for d in density.thin_topics(mixed)))
+check("but it does not re-lock an account already worth testing",
+      density.testable(mixed),
+      "a real interview raises topics constantly; one mention cannot undo the rest")
+
+# "Some friends" is not somebody the police can go and find.
+check("a real name counts", density.is_named("James") and density.is_named("Sam"))
+check("a bare plural does not",
+      not any(density.is_named(p) for p in
+              ["friends", "some friends", "a few friends", "my mates", "the staff",
+               "someone", "colleagues", "a friend"]),
+      "this is the vagueness probing exists to go after")
+
+vague_people = [Claim(id="v", turn_seq=1, text="I was with some friends",
+                      start_min=18 * 60, end_min=19 * 60, location="cafe",
+                      people=["some friends"], activity="drinking", topic="the pub")]
+check("a topic whose only 'person' is 'some friends' is thin",
+      density.assess(vague_people)["the pub"].thin,
+      "it scored full marks for naming nobody before this")
 check("a bare account is never testable however much time it covers",
       not density.testable(full_blocks))
 

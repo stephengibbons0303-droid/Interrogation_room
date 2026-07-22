@@ -36,6 +36,26 @@ STRONG = 0.75
 # topic, and they should still count for something rather than vanish.
 UNTAGGED = "the evening"
 
+# "Some friends" is not a person. The people signal exists to ask who could be
+# gone and spoken to, and a plural with no name attached answers that with
+# nobody - it is the vagueness probing is supposed to go after, so counting it
+# as a named person told the engine the topic was covered when it was empty.
+_UNNAMED_STARTS = ("a ", "an ", "the ", "some ", "my ", "our ", "his ", "her ",
+                   "their ", "few ", "a few ", "two ", "three ", "several ",
+                   "other ", "another ", "one of ")
+_UNNAMED_WORDS = {"friend", "friends", "people", "person", "someone", "somebody",
+                  "colleague", "colleagues", "family", "mate", "mates", "group",
+                  "others", "everyone", "staff", "waiter", "barman", "barmaid",
+                  "them", "they", "us", "we", "guys", "lads"}
+
+
+def is_named(person: str) -> bool:
+    """Does this actually name somebody the police could go and find?"""
+    p = (person or "").strip().lower()
+    if not p or p in _UNNAMED_WORDS:
+        return False
+    return not p.startswith(_UNNAMED_STARTS)
+
 
 @dataclass
 class TopicDensity:
@@ -50,29 +70,41 @@ class TopicDensity:
 
     @property
     def score(self) -> float:
-        """0..1. Quantity of detail first, as the research orders it, then the
-        checkable half - who was there and what was done - then grounding.
+        """0..1. How much of this could actually be checked by somebody.
 
-        Locations are deliberately NOT scored. Every claim about the evening
-        comes with one for free, the timeline already tracks them, and counting
-        them made "I was at X, then Y, then Z" read as a rich account when it is
-        the exact bare recital this module exists to detect.
+        Three things are deliberately NOT scored, each because it comes free and
+        so tells us nothing about whether the learner has really said anything:
+
+          * LOCATION. Every claim about an evening carries one, and the timeline
+            already tracks them. Counting them made "I was at X, then Y, then Z"
+            read as a rich account when it is the bare recital this module
+            exists to catch.
+          * ACTIVITY. Free text the model fills in on essentially every claim,
+            worded differently each time, so distinct-activity count tracks
+            claim count almost exactly. Scoring it meant measuring quantity
+            twice and calling the result substance - which is how an account
+            with no names and no sensory detail in it came out at 1.0.
+          * WHETHER A TIME WAS GIVEN. Also near-universal, and it was masking
+            the absence of sensory detail by sharing a term with it.
+
+        What is left is what a detective would actually chase: how much they
+        said, who they named, and what it was like to be there.
         """
         substance = min(self.claims / 3.0, 1.0)
-        who_what = min((self.people + self.activities) / 3.0, 1.0)
-        texture = min((self.sensory + self.timed) / 3.0, 1.0)
-        return round(0.35 * substance + 0.45 * who_what + 0.20 * texture, 3)
+        named = min(self.people / 2.0, 1.0)
+        texture = min(self.sensory / 2.0, 1.0)
+        return round(0.30 * substance + 0.35 * named + 0.35 * texture, 3)
 
     @property
     def thin(self) -> bool:
-        """Nobody named and nothing done is thin whatever else it has.
+        """Nobody named and nothing sensory is thin however much was said.
 
         A gate rather than a weight, because this is the shape the design note
         describes: a block with a couple of entities, no sensory detail and no
         named people. Such a topic can cover an hour of the evening and still
-        offer nothing that could later be checked, corroborated or contradicted.
+        offer nothing that could later be checked or contradicted.
         """
-        if not (self.people or self.activities):
+        if not (self.people or self.sensory):
             return True
         return self.score < THIN
 
@@ -84,13 +116,14 @@ class TopicDensity:
         """
         gaps = []
         if not self.people:
-            gaps.append("nobody named - who else was there, who served them, who saw them")
+            gaps.append("nobody NAMED - who served them, who they were with, who "
+                        "would remember them. 'Some friends' is not an answer")
+        if not self.sensory:
+            gaps.append("nothing seen, heard, smelled or felt - no sensory detail at all")
         if not self.timed:
             gaps.append("nothing anchored to a clock time")
         if not self.places:
             gaps.append("no location given")
-        if not self.sensory:
-            gaps.append("nothing seen, heard or felt - no sensory detail at all")
         if self.claims < 2:
             gaps.append("barely touched - one statement and nothing more")
         return gaps
@@ -123,7 +156,7 @@ def assess(claims: List[Claim]) -> Dict[str, TopicDensity]:
         # Counted distinctly: repeating the same name in five claims is one
         # person, not five, and treating it as five would call a thin topic rich.
         for name in claim.people:
-            if name and name.strip():
+            if is_named(name):
                 seen_people[topic].add(name.strip().lower())
         if claim.location:
             seen_places[topic].add(claim.location.strip().lower())
@@ -152,24 +185,26 @@ def thinnest(claims: List[Claim]) -> Optional[TopicDensity]:
     return thin[0] if thin else None
 
 
-def testable(claims: List[Claim], min_topics: int = 2) -> bool:
-    """Is the account rich enough to be worth attacking?
+def testable(claims: List[Claim], min_solid: int = 2) -> bool:
+    """Is there enough solid ground to be worth attacking?
 
-    Wants a few topics AND none of them thin. The second half is the point: an
-    account can cover the whole evening and still be a list of assertions with
-    nothing in it, and running that backwards proves nothing about anyone.
+    Counts what IS substantial rather than demanding that nothing is thin. A
+    real interview raises new topics constantly - one run coined five labels in
+    fourteen turns - so requiring every topic to be rich would let a single
+    fresh mention re-lock reverse chronology, permanently, however much the
+    learner had already given. The two uses are deliberately separate:
 
-    The topic count alone cannot be a hard gate, though. Topics are free-text
-    labels supplied by the model, so a run where it reuses one label throughout
-    would report a single topic no matter how much the learner said - and every
-    technique behind this gate, reverse chronology included, would silently
-    never fire. That is the exact failure this whole layer was built to end:
-    a technique that could not trigger because nothing knew enough to trigger
-    it. So one topic still qualifies, provided it is substantial on its own.
+        thin_topics()  ->  what to press for next
+        testable()     ->  is there enough behind us to test them against
+
+    One topic can still qualify on its own if it is strong, because topics are
+    free-text labels the model supplies: a run where it reused one label would
+    otherwise report a single topic no matter how much was said, and every
+    technique behind this gate would silently never fire. That failure - a
+    technique that cannot trigger because nothing knows enough to trigger it -
+    is the exact thing this whole layer was built to end.
     """
-    measured = assess(claims)
-    if not measured or any(d.thin for d in measured.values()):
-        return False
-    if len(measured) >= min_topics:
+    solid = [d for d in assess(claims).values() if not d.thin]
+    if len(solid) >= min_solid:
         return True
-    return max(d.score for d in measured.values()) >= STRONG
+    return len(solid) == 1 and solid[0].score >= STRONG
