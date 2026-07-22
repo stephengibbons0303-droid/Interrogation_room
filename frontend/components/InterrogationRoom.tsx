@@ -8,6 +8,13 @@ import { getInterview, sendMessage, type Modality, type Utterance } from '../lib
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
 
+/** Shown when a detective's line arrives with no audio behind it.
+ *
+ *  Held as a constant so it can be cleared again without wiping a microphone
+ *  message out of the same slot: the two subsystems share one error line, and
+ *  audio recovering says nothing about whether the mic is working. */
+const TTS_SILENT = "The detectives' voices aren't coming through — their words are still on screen.";
+
 interface Message {
     role: 'user' | 'agent';
     content: string;
@@ -57,6 +64,19 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         segments: { text: string; voice: string }[],
         onEnd?: () => void, onStart?: () => void,
     ) => {
+        // Every route out of here without audio now says which one it took. A
+        // line appearing in silence looks identical whether the sidecar is down,
+        // the backend is unreachable or playback was skipped on purpose - the
+        // same ambiguity the microphone had until it was made to explain itself.
+        // `tellThem` is false for the one case that is not a fault.
+        const noAudio = (why: string, tellThem = true) => {
+            console.warn(`[tts] ${why}`);
+            if (tellThem) setErrorMsg(TTS_SILENT);
+            setIsSpeaking(false);
+            if (onStart) onStart();
+            if (onEnd) onEnd();
+        };
+
         try {
             setIsSpeaking(true);
             // An aside is two speakers. The backend renders them into a single
@@ -72,38 +92,34 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             });
 
             if (!response.ok) {
-                console.warn("TTS endpoint returned", response.status, "- skipping audio");
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
-                return;
+                // 502 here is almost always the Kokoro sidecar being down rather
+                // than anything wrong with the request.
+                return noAudio(`backend returned ${response.status} for this line`
+                    + (response.status === 502 ? ' - is the TTS sidecar on 7678 up?' : ''));
             }
 
-            // If user started recording while TTS was loading, don't play over them
+            // Not a fault: they started talking while it was loading, and talking
+            // over them is worse than staying quiet.
             if (speechManager.current?.isListening) {
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
-                return;
+                return noAudio('learner began speaking while audio loaded - skipped deliberately',
+                               false);
             }
 
-            if (speechManager.current) {
-                await speechManager.current.playStreamingAudio(response, () => {
-                    setIsSpeaking(false);
-                    if (onEnd) onEnd();
-                }, () => {
-                    if (onStart) onStart();
-                });
-            } else {
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
+            if (!speechManager.current) {
+                return noAudio('no speech manager on this component - nothing can play');
             }
+
+            // Audio is flowing again. Clear only our own message, so a microphone
+            // warning sharing this slot is not silently wiped.
+            setErrorMsg(prev => (prev === TTS_SILENT ? null : prev));
+            await speechManager.current.playStreamingAudio(response, () => {
+                setIsSpeaking(false);
+                if (onEnd) onEnd();
+            }, () => {
+                if (onStart) onStart();
+            });
         } catch (error) {
-            console.error("TTS fetch error:", error);
-            setIsSpeaking(false);
-            if (onStart) onStart();
-            if (onEnd) onEnd();
+            noAudio(`could not reach ${BACKEND_URL}/tts: ${error}`);
         }
     }, []);
 
