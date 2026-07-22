@@ -67,7 +67,14 @@ class Claim:
     text: str
     start_min: Optional[int] = None       # minutes past midnight
     end_min: Optional[int] = None
+    # One of the case's four locations, or None. Constrained because the Timeline
+    # Validator does walk-time arithmetic between them.
     location: Optional[str] = None
+    # Where they ACTUALLY said they were, in their own words - "the Indian place",
+    # "the Pig and Whistle", "work". Most of an evening happens somewhere the
+    # four-location vocabulary cannot express, and with only `location` to go on
+    # the contradiction detector was blind to nearly all of it.
+    place: Optional[str] = None
     activity: Optional[str] = None
     people: List[str] = field(default_factory=list)
     # Which topic was live when they said it. Carried on the claim rather than

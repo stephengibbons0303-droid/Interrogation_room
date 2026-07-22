@@ -243,8 +243,12 @@ CHOOSE ONE OF THESE TACTICS AND REPORT WHICH YOU USED:
 
 Also extract, from the subject's LAST message only:
   - any factual claims about where they were, when, and with whom
-  - times as minutes past midnight (9:30pm = 1290); locations must be one of
+  - times as minutes past midnight (9:30pm = 1290); `location` must be one of
     cafe, bridge, home, station, or null if somewhere else
+  - `place`: where they said they were IN THEIR OWN WORDS, for every claim that
+    names anywhere at all - including the many that are not on that list. Word
+    it the same way each time they mention the same place, so two statements
+    about it can be set against each other.
   - `activity` and `people` whenever they give them. These are not optional
     extras: what someone did and who was there with them is how the account
     becomes checkable, and a claim recorded without them reads as empty.

@@ -611,6 +611,76 @@ check("and the same retired id always deals the same pair",
       == briefs_mod.get("innocent_missed_calls").id)
 
 
+print("\nSAME PLACE, DIFFERENT TIME  (how an account really moves)")
+
+
+def said(st, turn, text, start=None, end=None, location=None, place=None):
+    st.turn = turn
+    return dr.ingest(st, dr.Extraction(claims=[{
+        "text": text, "start_min": start, "end_min": end,
+        "location": location, "place": place}], topic="the evening"),
+        _an("x", responsive=True), None, turn)
+
+
+# Taken from a real interview. All three were about the cafe, so the detector -
+# which only compared claims naming DIFFERENT places - passed over every one.
+st = InterviewState()
+said(st, 3, "went to a cafe from about seven till eight", 19 * 60, 20 * 60, "cafe")
+found = said(st, 4, "I got there about 6 and left about 7.30", 18 * 60, 19 * 60 + 30, "cafe")
+check("the same place at a different time IS a contradiction now",
+      any(c.kind == "self" for c in found),
+      "arriving at seven and at six, in one account, went unremarked")
+
+st = InterviewState()
+said(st, 3, "left the cafe about eight", None, 20 * 60, "cafe")
+found = said(st, 4, "left the cafe about ten past eight", None, 20 * 60 + 10, "cafe")
+check("but refining a time is not", not found,
+      "'about eight' becoming 'ten past' is a learner being careful")
+
+st = InterviewState()
+said(st, 3, "I was at the cafe", None, None, "cafe")
+found = said(st, 4, "the cafe, until about eight", None, 20 * 60, "cafe")
+check("supplying a bound they had not given is not a change", not found)
+
+# Most of an evening happens somewhere the four case locations cannot express.
+st = InterviewState()
+said(st, 3, "dinner at the Indian place from half eight", 20 * 60 + 30, 22 * 60,
+     None, "the indian restaurant")
+found = said(st, 4, "we got to the Indian place about half nine", 21 * 60 + 30, 22 * 60,
+             None, "the indian restaurant")
+check("a place outside the case vocabulary is compared too",
+      any(c.kind == "self" for c in found),
+      "24 of 30 claims in the real run had no case location and were invisible")
+
+st = InterviewState()
+said(st, 3, "a drink at the pub", 17 * 60, 18 * 60, None, "the pub")
+found = said(st, 4, "dinner at the Indian place", 17 * 60, 18 * 60, None,
+             "the indian restaurant")
+check("two different named places at once is still caught",
+      any(c.kind == "self" for c in found))
+
+st = InterviewState()
+said(st, 3, "I was somewhere", 17 * 60, 18 * 60)
+found = said(st, 4, "I was somewhere else", 17 * 60, 18 * 60)
+check("claims naming nowhere at all are not guessed about", not found,
+      "with no place on either, there is nothing to say they conflict")
+
+# The one that nearly detained three honest learners. People narrate a single
+# stay in consecutive pieces, and end-to-end segments are not two arrivals.
+st = InterviewState()
+said(st, 3, "I was at the cafe from five", 17 * 60, 19 * 60, "cafe")
+found = said(st, 4, "between seven and eight I was reading there", 19 * 60, 20 * 60, "cafe")
+check("one stay described in consecutive parts is NOT a contradiction", not found,
+      "'from five' then 'seven till eight' is segmentation, not arriving twice")
+
+st = InterviewState()
+said(st, 3, "the pub, five till six", 17 * 60, 18 * 60, None, "the pub")
+found = said(st, 4, "then the pub again later, eight till nine", 20 * 60, 21 * 60,
+             None, "the pub")
+check("going back to the same place later is not a contradiction either",
+      not found, "two separate visits do not overlap, so they are not one episode")
+
+
 print("\nRE-TELLING MODE  (the second telling is the test)")
 
 
@@ -751,14 +821,25 @@ check("breaking a claim Chen vouched for still springs the sting",
 # expires. Without this the follow-up - the heaviest tactic in the registry -
 # holds the floor for the rest of the interview.
 st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
-opened_until = st.retelling_until_turn
+opened_until, f = st.retelling_until_turn, st.retelling_from_turn
 retell(st, [{"text": "the cafe again", "start_min": 18 * 60, "end_min": 20 * 60,
-             "location": "cafe", "people": ["Sam"]}])
+             "location": "cafe", "people": ["Sam"]}], turn=f + 1)
 check("part-way through, the window stays open",
       st.retelling_until_turn == opened_until, f"until={st.retelling_until_turn}")
+
+# A fluent learner can summarise the whole evening backwards in one message.
+# That used to clear the coverage bar instantly and shut the window before the
+# follow-up asked anything, so the second telling was measured on one paragraph.
 retell(st, [{"text": "and home after", "start_min": 20 * 60, "end_min": 21 * 60,
-             "location": "home"}], turn=st.retelling_from_turn + 2)
-check("once the ground is re-covered, the window shuts early",
+             "location": "home"}], turn=f + 2)
+check("covering it all at once does NOT cut the test short",
+      st.retelling_until_turn == opened_until,
+      "working through it step by step is the technique; a complete first "
+      "answer is not a reason to stop asking")
+
+retell(st, [{"text": "the cafe, like I said", "start_min": 18 * 60, "end_min": 20 * 60,
+             "location": "cafe", "people": ["Sam"]}], turn=f + 3)
+check("once it has been worked through, the window shuts early",
       st.retelling_until_turn < opened_until,
       f"until={st.retelling_until_turn}, opened_until={opened_until}")
 
@@ -770,10 +851,11 @@ for n in range(6):                                   # six claims, one span
               "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}],
               topic="the cafe"), _an("x", responsive=True), None, 6)
 dr.arm_retelling(st, "reverse_chronology")
-opened_until = st.retelling_until_turn
-retell(st, [{"text": "the cafe, six till eight", "start_min": 18 * 60,
-             "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}])
-check("one re-statement can close a span built over six turns",
+opened_until, f = st.retelling_until_turn, st.retelling_from_turn
+for n in range(1, dr._RETELLING_MIN_TURNS + 1):
+    retell(st, [{"text": "the cafe, six till eight", "start_min": 18 * 60,
+                 "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}], turn=f + n)
+check("re-covering the ground closes a span built over six turns",
       st.retelling_until_turn < opened_until,
       "counting claims rather than ground would set a bar nobody could clear")
 

@@ -49,11 +49,25 @@ RETELLING_TACTICS = {"reverse_chronology", "retell_from_point"}
 # anybody lying; the threshold has to clear ordinary imprecision.
 _RETELLING_TIME_SHIFT = 30
 
+# Two claims about one place are only the SAME EPISODE if their spans genuinely
+# overlap. People narrate a single stay in consecutive pieces - "I was there from
+# five", "between seven and eight I was reading" - and those sit end to end, not
+# on top of each other. Without this, describing one evening in segments reads as
+# arriving twice, and an account told faithfully gets its teller detained.
+_SAME_EPISODE_OVERLAP = 15
+
 # How much of the first telling has to be gone over again before the second one
 # counts as given. Measured in ground covered rather than claims re-stated: an
 # account of four stretches of the evening might have been built over ten turns,
 # and demanding ten re-statements would be a bar nobody could clear.
 _RETELLING_DONE = 0.8
+
+# ...but never in fewer than this many turns. A fluent learner can summarise the
+# whole evening backwards in one long message, which cleared the bar instantly
+# and shut the window before the follow-up had asked a single question - so the
+# second telling got measured on one paragraph. Working through it step by step
+# is the technique; a complete first answer is not a reason to stop asking.
+_RETELLING_MIN_TURNS = 3
 
 
 # ── speaker selection ────────────────────────────────────────────────────────
@@ -146,6 +160,20 @@ def _first_telling(state: InterviewState, before_turn: int) -> List[Claim]:
     """The account as it stood before they were asked to give it again."""
     return [c for c in normalise(state.claims)
             if c.turn_seq <= before_turn and not c.restates]
+
+
+def place_key(claim: Claim) -> Optional[str]:
+    """What the learner said this claim was ABOUT, for comparing like with like.
+
+    Prefers the case location where one was recognised, and otherwise falls back
+    to whatever they called it. Without the fallback, everywhere that is not one
+    of the four case locations - which in practice is most of an evening - could
+    never be compared with anything they said about it later.
+    """
+    if claim.location:
+        return claim.location
+    place = (claim.place or "").strip().lower()
+    return place or None
 
 
 def _covered_minutes(claims: List[Claim]) -> int:
@@ -253,6 +281,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             start_min=raw.get("start_min"),
             end_min=raw.get("end_min"),
             location=raw.get("location"),
+            place=raw.get("place"),
             activity=raw.get("activity"),
             people=raw.get("people") or [],
             topic=topic,
@@ -307,16 +336,53 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
         for prior in (normalise(state.claims) if matched is None else []):
             if prior.id == cid or prior.turn_seq >= claim.turn_seq:
                 continue
-            if not (prior.location and claim.location) or prior.location == claim.location:
+            prior_row = state.claim(prior.id)
+            if prior_row is None or prior_row.superseded_by:
                 continue
-            if prior.start_min < claim.end_min and claim.start_min < prior.end_min:
-                prior_row = state.claim(prior.id)
-                if prior_row is None or prior_row.superseded_by:
-                    continue
+            here, there = place_key(claim), place_key(prior)
+
+            # Two places at once.
+            if here and there and here != there \
+                    and prior.start_min < claim.end_min and claim.start_min < prior.end_min:
                 prior_row.superseded_by = cid
                 found.append(Contradiction(
                     id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
                     detail=f"earlier: '{prior.text}' - now: '{claim.text}'",
+                    claim_id=cid, against_claim_id=prior.id,
+                    was_vouched=prior_row.vouched_by_chen,
+                ))
+                continue
+
+            # The SAME place, at a different time - and this is the commonest way
+            # an account really moves. The check used to require the two claims
+            # to name different places, so "I left the cafe about half seven" and
+            # "I left the cafe about eight" passed each other without a word.
+            # Stated bounds only, never one the timeline filled in, and it has to
+            # clear ordinary rounding: refining "about eight" to "ten past" is a
+            # learner being careful, not an account changing.
+            if not (here and there and here == there):
+                continue
+            # Same episode, or merely the next part of one? Only overlapping
+            # spans are two accounts of the same stretch of the evening.
+            if min(prior.end_min, claim.end_min) \
+                    - max(prior.start_min, claim.start_min) < _SAME_EPISODE_OVERLAP:
+                continue
+            raw_now, raw_before = state.claim(cid), prior_row
+            if raw_now is None:
+                continue
+            moved, which = 0, ""
+            for field, label in (("start_min", "arriving"), ("end_min", "leaving")):
+                a, b = getattr(raw_now, field), getattr(raw_before, field)
+                if a is None or b is None:
+                    continue                      # supplying a missing bound is not a change
+                if abs(a - b) > moved:
+                    moved, which = abs(a - b), label
+            if moved >= _RETELLING_TIME_SHIFT:
+                prior_row.superseded_by = cid
+                found.append(Contradiction(
+                    id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
+                    detail=(f"{here}, {which}: earlier '{prior.text}' - "
+                            f"now '{claim.text}' - {moved} minutes apart"),
                     claim_id=cid, against_claim_id=prior.id,
                     was_vouched=prior_row.vouched_by_chen,
                 ))
@@ -350,7 +416,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     # follow-up - the heaviest tactic in the registry - hold the floor for the
     # rest of the interview. RETELLING_TURNS stays as the backstop for a learner
     # who wanders off and never finishes.
-    if retelling:
+    if retelling and turn_seq - baseline_turn >= _RETELLING_MIN_TURNS:
         first = _first_telling(state, baseline_turn)
         revisited = {c.restates for c in state.claims
                      if c.restates and c.turn_seq > baseline_turn}

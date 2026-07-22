@@ -137,6 +137,11 @@ class ClaimOut(BaseModel):
     start_min: Optional[int] = Field(None, description="start, minutes past midnight; 9:30pm = 1290")
     end_min: Optional[int] = Field(None, description="end, minutes past midnight")
     location: Optional[str] = Field(None, description="one of: cafe, bridge, home, station, or null")
+    place: Optional[str] = Field(
+        None, description=("where they said they were, in their own words - 'the Indian "
+                           "restaurant', 'the Pig and Whistle', 'work'. Give this for EVERY "
+                           "claim that names a place, including ones that are not in the "
+                           "location list. Use the same wording each time for the same place."))
     activity: Optional[str] = None
     people: List[str] = Field(default_factory=list)
 
