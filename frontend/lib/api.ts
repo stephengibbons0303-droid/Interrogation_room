@@ -147,10 +147,18 @@ async function tryRefresh(): Promise<boolean> {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ refresh_token: refresh }),
         });
-        if (!res.ok) { clearTokens(); return false; }
-        setTokens(await res.json());
-        return true;
+        if (res.ok) {
+            setTokens(await res.json());
+            return true;
+        }
+        // Only a real auth rejection means the refresh token is dead - clear and
+        // sign out. A 502/503/504 is the backend momentarily unreachable (a
+        // restart, a proxy hiccup); wiping tokens there would sign the learner
+        // out mid-interview over a transient blip, with a perfectly valid token.
+        if (res.status === 401 || res.status === 403) clearTokens();
+        return false;
     } catch {
+        // Network error: transient, keep the tokens and let the caller retry.
         return false;
     }
 }

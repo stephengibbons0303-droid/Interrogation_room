@@ -91,9 +91,16 @@ class Interview(Base):
     brief_id = Column(String(64), nullable=True)
     outcome = Column(String(32), nullable=True)
 
-    # NOTE: escalation_score / contradiction_count are gone. They were written
-    # and never read. Pressure and the contradiction ledger now live in
-    # engine_state and actually drive behaviour.
+    # DEPRECATED: written and never read - pressure and the contradiction ledger
+    # live in engine_state now. Not dropped, because a database created before
+    # they were retired has them as NOT NULL, and SQLite < 3.35 (Ubuntu 20.04,
+    # Debian 11, RHEL 8) cannot DROP COLUMN - so an attempted drop failed and
+    # then every new-interview INSERT hit the NOT NULL with no default and 500'd.
+    # Keeping them nullable WITH a default is bulletproof across all SQLite and
+    # Postgres versions: a fresh schema carries two harmless zero columns, and an
+    # old schema's NOT NULL is always satisfied because every insert supplies 0.
+    escalation_score = Column(Integer, nullable=True, server_default="0", default=0)
+    contradiction_count = Column(Integer, nullable=True, server_default="0", default=0)
 
     user = relationship("User", back_populates="interviews")
     turns = relationship("Turn", back_populates="interview",
@@ -222,14 +229,6 @@ _ADDED_UNIQUE_INDEXES = {
 }
 
 
-# Retired columns. These were written and never read, and they are NOT NULL with
-# no default - so once they left the model, every insert failed. Dropping them is
-# the honest fix; leaving them would mean carrying dead state forever.
-_RETIRED_COLUMNS = {
-    "interviews": ["escalation_score", "contradiction_count"],
-}
-
-
 def _ensure_columns() -> None:
     """Bring an existing database up to the current shape. Idempotent.
 
@@ -247,21 +246,6 @@ def _ensure_columns() -> None:
                 if name not in present:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
                     print(f"  db: added {table}.{name}")
-
-        for table, names in _RETIRED_COLUMNS.items():
-            if table not in existing_tables:
-                continue
-            present = {c["name"] for c in inspector.get_columns(table)}
-            for name in names:
-                if name not in present:
-                    continue
-                try:
-                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {name}"))
-                    print(f"  db: dropped {table}.{name}")
-                except Exception as e:
-                    # SQLite gained DROP COLUMN in 3.35. On anything older the
-                    # column stays; it is harmless once it is nullable.
-                    print(f"  db: could not drop {table}.{name} ({e})")
 
         for index_name, (table, cols) in _ADDED_UNIQUE_INDEXES.items():
             if table not in existing_tables:

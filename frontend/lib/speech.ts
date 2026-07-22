@@ -43,6 +43,11 @@ export class SpeechManager {
     private currentAudio: HTMLAudioElement | null = null;
     private maxListenTimer: ReturnType<typeof setTimeout> | null = null;
     private speechStartedAt: number = 0;
+    // Completion for whatever is playing right now: revoke its blob URL and run
+    // its pending onEnd, exactly once. stopAudio() calls it so an interrupted
+    // line still runs its "after this line" logic (setting the outcome, arming
+    // the mic) instead of dropping it, and does not leak the audio blob.
+    private currentAudioCleanup: (() => void) | null = null;
     // Set on destroy(). With submitUserSpeechOnPause, tearing down mid-speech
     // would otherwise flush the segment through onSpeechEnd and SEND a message
     // from a component that no longer exists.
@@ -170,8 +175,24 @@ export class SpeechManager {
             // the MediaStream was already acquired above.
             if (!this.vad) {
                 if (!this.vadReady) this.vadReady = this._initVAD();
-                await this.vadReady;
-                this.vadReady = null;
+                try {
+                    await this.vadReady;
+                } finally {
+                    // Clear in a finally, not after the await. A rejected init
+                    // used to leave the rejected promise cached here forever, so
+                    // every later MIC click re-awaited the same rejection and the
+                    // mic was dead for the whole session - the message told them
+                    // to try again, and trying again could never work.
+                    this.vadReady = null;
+                }
+            }
+
+            // Unmounted while we were awaiting init: do not bring a hot audio
+            // pipeline up behind a screen that is gone. destroy() already tore
+            // down what it could see; finish the teardown of what init built.
+            if (this.destroyed) {
+                this.vad?.pause?.();
+                return;
             }
 
             this.vad.start();
@@ -260,6 +281,12 @@ export class SpeechManager {
             const data = await response.json();
             console.info(`[mic] transcript: ${JSON.stringify(data.text ?? '')}`);
 
+            // Re-check AFTER the await: destroy() may have run while the STT
+            // request was in flight. Firing onResult now would send a full chat
+            // turn for a room the learner already left - the backend would record
+            // it and reply into nothing. The entry check alone cannot catch this.
+            if (this.destroyed) return;
+
             if (data.text && data.text.trim()) {
                 this.onResult(data.text.trim());
             } else {
@@ -280,11 +307,14 @@ export class SpeechManager {
     }
 
     stopAudio() {
+        const cleanup = this.currentAudioCleanup;
+        this.currentAudioCleanup = null;
         if (this.currentAudio) {
+            this.currentAudio.onended = null;   // finish runs via cleanup, not ended
             this.currentAudio.pause();
-            this.currentAudio.currentTime = 0;
             this.currentAudio = null;
         }
+        if (cleanup) cleanup();                 // revoke blob + fire pending onEnd, once
     }
 
     playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
@@ -301,29 +331,37 @@ export class SpeechManager {
             if (onStart) onStart();
         };
 
+        // Single completion path, run at most once - by natural end, by error, or
+        // by stopAudio() interrupting. It always revokes the blob; it runs onEnd
+        // unless the whole manager has been destroyed (a dead component must not
+        // be handed a callback that sets React state).
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            URL.revokeObjectURL(url);
+            if (this.currentAudio === audio) this.currentAudio = null;
+            this.currentAudioCleanup = null;
+            if (onEnd && !this.destroyed) onEnd();
+        };
+        this.currentAudioCleanup = finish;
+
         audio.addEventListener('playing', fireStart, { once: true });
         audio.addEventListener('pause', fireStart, { once: true });
-
-        audio.onended = () => {
-            URL.revokeObjectURL(url);
-            this.currentAudio = null;
-            if (onEnd) onEnd();
-        };
+        audio.onended = finish;
 
         audio.onerror = (e) => {
             console.error("Audio playback error:", e);
-            URL.revokeObjectURL(url);
-            this.currentAudio = null;
             if (this.onError) this.onError("Audio playback failed");
             fireStart();
-            if (onEnd) onEnd();
+            finish();
         };
 
         audio.play().catch((err) => {
             console.error("Audio play() rejected:", err);
             if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
             fireStart();
-            if (onEnd) onEnd();
+            finish();
         });
     }
 
@@ -350,6 +388,17 @@ export class SpeechManager {
             const audio = new Audio();
             audio.src = URL.createObjectURL(mediaSource);
             this.currentAudio = audio;
+
+            let finished = false;
+            const finish = () => {
+                if (finished) return;
+                finished = true;
+                URL.revokeObjectURL(audio.src);
+                if (this.currentAudio === audio) this.currentAudio = null;
+                this.currentAudioCleanup = null;
+                if (onEnd && !this.destroyed) onEnd();
+            };
+            this.currentAudioCleanup = finish;
 
             audio.addEventListener('playing', fireStart, { once: true });
             audio.addEventListener('pause', fireStart, { once: true });
@@ -385,29 +434,24 @@ export class SpeechManager {
                 } catch (err) {
                     console.error('Stream read error:', err);
                     fireStart();
-                    if (onEnd) onEnd();
+                    finish();
                 }
             });
 
-            audio.onended = () => {
-                URL.revokeObjectURL(audio.src);
-                this.currentAudio = null;
-                if (onEnd) onEnd();
-            };
+            audio.onended = finish;
 
             audio.onerror = (e) => {
                 console.error("Streaming audio error:", e);
-                URL.revokeObjectURL(audio.src);
-                this.currentAudio = null;
+                if (this.onError) this.onError("Audio playback failed");
                 fireStart();
-                if (onEnd) onEnd();
+                finish();
             };
 
             audio.play().catch((err) => {
                 console.error("Audio play() rejected:", err);
                 if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
                 fireStart();
-                if (onEnd) onEnd();
+                finish();
             });
         } else {
             // Fallback: collect full response as blob, then play

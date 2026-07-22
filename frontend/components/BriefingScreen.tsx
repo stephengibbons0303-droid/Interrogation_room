@@ -71,6 +71,12 @@ export default function BriefingScreen({ interviewId, onReady }:
 
     // Deliberately does NOT speak on arrival - see the note on the component.
     useEffect(() => {
+        // Reset on every (re)mount. Without this, React StrictMode's dev-only
+        // mount -> cleanup -> mount on the same fiber left `gone` stuck true from
+        // the first cleanup - so every "Read it to me" click synthesised the
+        // whole brief and then silently discarded it. Setup clears the flag;
+        // cleanup sets it; the last thing to run on a live screen is this reset.
+        gone.current = false;
         getBrief(interviewId)
             .then(setBrief)
             .catch(() => setError('Could not load your brief.'));

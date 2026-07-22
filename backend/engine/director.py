@@ -109,9 +109,13 @@ def select_speaker(ctx: tac.Context) -> Tuple[str, str]:
     if ctx.last_learner_struggling or s.nonresponsive_streak >= 2:
         return SECOND, "rapport"
 
-    # 2. Specific evidence is due - assigned to the lead during planning.
+    # 2. Specific evidence is due - assigned to the lead. Keyed on not-yet-fully-
+    #    escalated (disclosure level), matching next_disclosure: an item put once
+    #    vaguely still has moderate and precise to come, and the lead runs those.
     if Stage(s.stage) == Stage.CHALLENGE and any(
-            c.kind == "evidence" and not c.raised for c in s.contradictions):
+            c.kind == "evidence" and c.evidence_id
+            and s.disclosed.get(c.evidence_id) != "precise"
+            for c in s.contradictions):
         return LEAD, "evidence"
 
     # 3. The dynamic has stalled - the other interviewer may get somewhere.
@@ -901,15 +905,24 @@ def next_disclosure(state: InterviewState) -> Optional[Tuple[str, str]]:
 
     The Evidence Framing Matrix: the same item is introduced vaguely, then
     moderately, then precisely, so the learner keeps having to account for it
-    with progressively less room.
+    with progressively less room. The escalation is driven by the level already
+    disclosed, NOT by whether the item has been raised - it used to skip any
+    raised item, so an item was retired after its first (vague) putting and the
+    matrix never escalated past level one for anything.
+
+    Items are worked weakest-first (case.DISCLOSURE_ORDER), so the learner keeps
+    committing before the strong evidence lands.
     """
-    for c in state.contradictions:
-        if c.kind != "evidence" or c.raised or not c.evidence_id:
-            continue
-        current = state.disclosed.get(c.evidence_id)
-        nxt = _LEVELS[0] if current is None else (
-            _LEVELS[min(_LEVELS.index(current) + 1, len(_LEVELS) - 1)])
-        return c.evidence_id, nxt
+    minted = {c.evidence_id for c in state.contradictions
+              if c.kind == "evidence" and c.evidence_id}
+    ordered = [e for e in case.DISCLOSURE_ORDER if e in minted]
+    ordered += [e for e in minted if e not in case.DISCLOSURE_ORDER]  # any not listed
+    for ev_id in ordered:
+        current = state.disclosed.get(ev_id)
+        if current == _LEVELS[-1]:
+            continue                          # fully escalated, nothing more to add
+        nxt = _LEVELS[0] if current is None else _LEVELS[_LEVELS.index(current) + 1]
+        return ev_id, nxt
     return None
 
 

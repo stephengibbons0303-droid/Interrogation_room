@@ -49,6 +49,10 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     const [hasStarted, setHasStarted] = useState(false);
     const [briefed, setBriefed] = useState(false);
     const [outcome, setOutcome] = useState<string | null>(null);
+    // Set from the outcome card's "Read the transcript" button. A concluded
+    // interview must be re-readable (the picker offers "Review"); without this
+    // the outcome card shadowed the loaded transcript and it was unreachable.
+    const [reviewing, setReviewing] = useState(false);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
@@ -454,8 +458,10 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         return <BriefingScreen interviewId={interviewId} onReady={beginInterrogation} />;
     }
 
-    // The interview has concluded. What they said decided this.
-    if (outcome) {
+    // The interview has concluded. Show the verdict card first; "Read the
+    // transcript" drops through to the normal view (with the outcome as a banner
+    // and no input) so a finished interview can actually be re-read.
+    if (outcome && !reviewing) {
         const copy: Record<string, { title: string; line: string; colour: string }> = {
             released: {
                 title: 'Released',
@@ -491,17 +497,30 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                         style={{ color: 'var(--text-secondary)' }}>
                         {o.line}
                     </p>
-                    <button
-                        onClick={onExit}
-                        className="mt-6 px-8 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
-                        style={{
-                            background: 'var(--surface-raised)',
-                            border: '1px solid var(--border-bright)',
-                            color: 'var(--text-secondary)',
-                        }}
-                    >
-                        Back to interviews
-                    </button>
+                    <div className="flex items-center justify-center gap-3 mt-6">
+                        <button
+                            onClick={() => setReviewing(true)}
+                            className="px-6 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                            style={{
+                                background: 'var(--surface-raised)',
+                                border: '1px solid var(--border-bright)',
+                                color: 'var(--text-secondary)',
+                            }}
+                        >
+                            Read the transcript
+                        </button>
+                        <button
+                            onClick={onExit}
+                            className="px-6 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                            style={{
+                                background: 'var(--surface-raised)',
+                                border: '1px solid var(--border-bright)',
+                                color: 'var(--text-secondary)',
+                            }}
+                        >
+                            Back to interviews
+                        </button>
+                    </div>
                 </div>
             </div>
         );
@@ -567,6 +586,27 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
 
             {/* The learner's own brief, within reach throughout */}
             <BriefPanel interviewId={interviewId} />
+
+            {/* Reviewing a concluded interview: the verdict as a banner over the
+                transcript, which stays fully readable below. */}
+            {outcome && (
+                <div className="px-5 py-2 flex items-center justify-between gap-3"
+                    style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+                    <span className="text-xs font-mono uppercase tracking-widest"
+                        style={{
+                            color: outcome === 'released' ? 'var(--teal)'
+                                : outcome === 'detained' ? 'var(--red-accent)' : 'var(--amber)',
+                        }}>
+                        Concluded · {outcome.replace(/_/g, ' ')}
+                    </span>
+                    <button
+                        onClick={onExit}
+                        className="text-xs font-mono px-2 py-1 rounded"
+                        style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                        Back to interviews
+                    </button>
+                </div>
+            )}
 
             {/* Chat Area */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
@@ -673,7 +713,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
+            {/* Input Area - hidden once the interview has concluded; a finished
+                interview is read-only, and a send would 409. */}
+            {!outcome && (
             <div
                 className="px-5 py-3"
                 style={{
@@ -737,6 +779,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                     </button>
                 </div>
             </div>
+            )}
         </div>
     );
 }

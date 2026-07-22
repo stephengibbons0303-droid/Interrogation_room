@@ -110,8 +110,15 @@ def _has_open_contradiction(c: Context) -> bool:
 
 
 def _has_undisclosed_clash(c: Context) -> bool:
-    """A committed claim walks into evidence that has not been put yet."""
-    return any(x.kind == "evidence" and not x.raised
+    """A committed claim walks into evidence not yet FULLY escalated.
+
+    Gated on the disclosure level, not on `raised`: an item raised once (vaguely)
+    still has moderate and precise to come, and gating on raised retired it after
+    the first putting - which is why the framing matrix never escalated.
+    """
+    disclosed = c.state.disclosed
+    return any(x.kind == "evidence" and x.evidence_id
+               and disclosed.get(x.evidence_id) != "precise"
                for x in c.state.contradictions)
 
 

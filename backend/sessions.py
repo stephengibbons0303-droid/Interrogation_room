@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 import uuid
 
-from agent import InterrogationAgent
+from agent import InterrogationAgent, LLMUnavailable
 from auth import get_current_user
 from db import Claim as ClaimRow, Interview, Turn, User, get_db
 from engine.state import InterviewState
@@ -282,6 +282,14 @@ def chat(interview_id: str, body: ChatRequest,
             db.commit()
         except HTTPException:
             raise
+        except LLMUnavailable:
+            # Transient model fault. Nothing was committed; drop the cached agent
+            # so the retry starts from the DB rather than double-counting, and
+            # tell the client to try again instead of writing a fake turn.
+            drop_agent(interview_id)
+            raise HTTPException(
+                status_code=503,
+                detail="The interviewers are unavailable for a moment. Please try again.")
         except Exception:
             # process_message already advanced the cached agent's turn, history
             # and claims; the commit that would have recorded them just failed and

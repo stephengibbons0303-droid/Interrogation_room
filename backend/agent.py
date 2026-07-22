@@ -31,6 +31,17 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
+
+class LLMUnavailable(Exception):
+    """A configured LLM failed or returned nothing usable this turn.
+
+    Distinct from Mock Mode (no LLM configured at all, which is a legitimate
+    local-dev state that returns a visible placeholder). This is a transient
+    fault, so the endpoint turns it into a retryable 503 and persists nothing -
+    rather than writing the "[MOCK MODE ...]" placeholder into the permanent
+    transcript as though a detective had said it, and losing the learner's turn.
+    """
+
 # Anchored to this file's directory rather than the process working directory.
 # "./chroma_db" meant the detectives' memory depended on where the server was
 # launched from: start it one directory up and Chroma quietly builds a new,
@@ -162,8 +173,15 @@ class TurnOut(BaseModel):
         description=("the subject's own name, ONLY if they have clearly given it as their "
                      "name. Null otherwise. Never a greeting, courtesy or acknowledgement "
                      "such as 'thank you', 'yes', 'I understand' or 'sorry'."))
-    topic: Optional[str] = None
-    topic_complete: bool = False
+    topic: Optional[str] = Field(
+        None, description=("a short, STABLE label for the stretch of the interview this "
+                           "turn is about - 'the cafe', 'the walk home', 'Emily'. Reuse "
+                           "the same label while you stay on the same ground."))
+    topic_complete: bool = Field(
+        False, description=("true when you are DONE with the current topic and moving on - "
+                            "you have what you need from it and the next question will open "
+                            "a different thread. This is what lets the interview register a "
+                            "topic as covered, so set it whenever you change subject."))
     chen_vouched_claim: bool = Field(
         False, description="true if Chen pushed them to commit to a specific detail this turn")
     premise_corrected: Optional[bool] = Field(
@@ -305,8 +323,12 @@ class InterrogationAgent:
             result: TurnOut = self.llm.with_structured_output(TurnOut).invoke(
                 [SystemMessage(content=system), *self._context_messages()])
         except Exception as e:
+            # A configured model that errors is a transient fault, not Mock Mode.
+            # Raise so the endpoint returns a retryable 503 and persists nothing;
+            # the caller drops the (already-advanced) cached agent so a retry
+            # starts clean rather than double-counting this turn.
             print(f"Error invoking LLM: {e}")
-            return self._mock(user_message)
+            raise LLMUnavailable(str(e))
         print(f"[turn {self.state.turn}] LLM {time.perf_counter() - started:.2f}s "
               f"({len(system)} chars of system prompt, "
               f"{len(self.history[-14:])} messages of history)")
@@ -331,7 +353,9 @@ class InterrogationAgent:
         # then turns back to the subject.
         utterances = [u for u in result.utterances if (u.text or "").strip()][:3]
         if not utterances:
-            return self._mock(user_message)
+            # A configured model returned no usable line. Same as a call failure:
+            # do not persist a placeholder as a detective's turn.
+            raise LLMUnavailable("model returned no utterances")
 
         for u in utterances:
             if u.speaker not in ("Reynolds", "Chen"):

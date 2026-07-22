@@ -107,10 +107,20 @@ CRITICAL RULES:
 
 
 def _evidence_block(state: InterviewState, disclosure) -> str:
-    known = [case.EVIDENCE[e].fact for e in state.disclosed if e in case.EVIDENCE]
     lines = []
+    # Already-disclosed items are shown at the LEVEL they were disclosed, never
+    # the raw precise fact. Showing the fact spoiled the Evidence Framing Matrix:
+    # the whole point is to escalate vague -> moderate -> precise across turns, and
+    # handing the model the precise wording the moment anything was put vaguely
+    # let it leap straight to the details the learner had not yet been given.
+    known = []
+    for ev_id, level in state.disclosed.items():
+        ev = case.EVIDENCE.get(ev_id)
+        if ev:
+            known.append(ev.framing.get(level, ev.framing["precise"]))
     if known:
-        lines.append("ALREADY PUT TO THEM:\n" + "\n".join(f"  - {k}" for k in known))
+        lines.append("ALREADY PUT TO THEM (do not become more specific than this):\n"
+                     + "\n".join(f"  - {k}" for k in known))
     if disclosure:
         ev_id, level = disclosure
         ev = case.EVIDENCE.get(ev_id)
@@ -118,6 +128,16 @@ def _evidence_block(state: InterviewState, disclosure) -> str:
             lines.append(
                 f"EVIDENCE TO INTRODUCE THIS TURN, at '{level}' level - do not be more "
                 f"specific than this:\n  \"{ev.framing[level]}\"")
+    # Content evidence the mechanical clash cannot surface (a phone call has a
+    # time but no place). On file, and fair to put to them directly - this is how
+    # the concealing brief's "the calls are on record" actually bites.
+    if Stage(state.stage) is Stage.CHALLENGE:
+        ref = case.referenceable_evidence()
+        if ref:
+            lines.append(
+                "ALSO ON FILE - you may put any of these to them directly if the moment "
+                "fits (for instance if they deny it):\n"
+                + "\n".join(f"  - {ev.fact}" for ev in ref))
     lines.append(
         "Do not invent evidence. If it is not listed here, the police do not have it.")
     return "\n\n".join(lines)
@@ -283,6 +303,11 @@ Also extract, from the subject's LAST message only:
     about ("the cafe", "the walk home", "Emily"). Reuse the same label while you
     stay on the same ground - it is how the account is tracked, and a new label
     every turn scatters it into fragments that each look bare.
+  - `topic_complete`: true when you are finished with the current topic and about
+    to change subject - you have what you need and the next question opens a
+    different thread. This is the ONLY thing that marks a topic as covered, which
+    gates the hand-off to the other detective and the move out of probing, so set
+    it whenever you move on rather than leaving it false by default.
   - whether their message actually addressed the question you asked
   - whether you (as Chen) pushed them to commit to a specific detail this turn
 """

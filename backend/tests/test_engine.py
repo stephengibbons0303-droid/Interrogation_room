@@ -166,6 +166,8 @@ from engine.state import (ChenStance, Contradiction,    # noqa: E402
                           InterviewState, Outcome, Stage)
 from engine import density                             # noqa: E402
 from scenario import briefs as briefs_mod               # noqa: E402
+from scenario import case                               # noqa: E402
+import prompts                                          # noqa: E402
 
 
 def ctx_with(stage, claims=(), **kw):
@@ -337,7 +339,8 @@ reasons = {}
 for i in range(60):
     if i % 9 == 0:                       # evidence becomes due
         st.contradictions.append(Contradiction(id=f"x{i}", kind="evidence",
-                                               turn_seq=i, detail="d"))
+                                               turn_seq=i, detail="d",
+                                               evidence_id="cell_tower"))
     if i % 13 == 0:                      # learner loses the thread
         st.nonresponsive_streak = 2
     c = dr.build_context(st, None)
@@ -435,17 +438,53 @@ check("no outcome before closure", dr.decide_outcome(st) is None)
 
 print("\nEVIDENCE FRAMING MATRIX")
 
+# Escalation is driven by the level disclosed, and crucially works even once the
+# item is RAISED - the production flow marks it raised on the first putting, and
+# the old code retired any raised item so the matrix never escalated past vague.
 st = InterviewState()
 st.contradictions.append(Contradiction(id="c", kind="evidence", turn_seq=1,
-                                       detail="d", evidence_id="cell_tower"))
-first = dr.next_disclosure(st)
-check("evidence is first put vaguely", first == ("cell_tower", "vague"), str(first))
+                                       detail="d", evidence_id="cell_tower", raised=True))
+check("evidence is first put vaguely", dr.next_disclosure(st) == ("cell_tower", "vague"))
 st.disclosed["cell_tower"] = "vague"
-check("then moderately", dr.next_disclosure(st) == ("cell_tower", "moderate"))
+check("then moderately - even though it is already raised",
+      dr.next_disclosure(st) == ("cell_tower", "moderate"),
+      "the matrix must escalate a raised item, not retire it")
 st.disclosed["cell_tower"] = "moderate"
 check("then precisely", dr.next_disclosure(st) == ("cell_tower", "precise"))
 st.disclosed["cell_tower"] = "precise"
-check("and never beyond precise", dr.next_disclosure(st) == ("cell_tower", "precise"))
+check("and once precise, nothing more to add", dr.next_disclosure(st) is None)
+
+# sue_disclose stays AVAILABLE until the item is fully escalated.
+c, _st = ctx_with(Stage.CHALLENGE, full_rich)
+_st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1, detail="d",
+                                         evidence_id="cell_tower", raised=True))
+_st.disclosed["cell_tower"] = "vague"
+c = dr.build_context(_st, None)
+check("sue_disclose is still offered while escalation remains",
+      "sue_disclose" in {t.id for t in tac.available(c, "Reynolds")})
+_st.disclosed["cell_tower"] = "precise"
+c = dr.build_context(_st, None)
+check("and withdrawn once every item is precise",
+      "sue_disclose" not in {t.id for t in tac.available(c, "Reynolds")})
+
+# Weakest-first order across several minted items.
+st = InterviewState()
+for eid in ("cell_tower", "witness_sighting"):     # strong, then weaker
+    st.contradictions.append(Contradiction(id=eid, kind="evidence", turn_seq=1,
+                                            detail="d", evidence_id=eid))
+check("disclosure works up from the weaker item first",
+      dr.next_disclosure(st)[0] == "witness_sighting",
+      "witness_sighting precedes cell_tower in DISCLOSURE_ORDER")
+
+# Content evidence that the mechanical clash can never surface is referenceable,
+# so the concealing brief's "the calls are on record" can actually bite.
+ref_ids = {ev.id for ev in case.referenceable_evidence()}
+check("phone_records is referenceable evidence", "phone_records" in ref_ids,
+      "a call has a time but no place, so evidence_for skips it")
+block_text = prompts._evidence_block(
+    InterviewState(stage=Stage.CHALLENGE.value), None)
+check("and it reaches the prompt in the challenge stage",
+      "rang you twice" in block_text or "call" in block_text.lower(), block_text[:200])
 
 
 print("\nDETAIL DENSITY  (what makes probing directed)")

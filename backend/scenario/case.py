@@ -202,6 +202,21 @@ TOPICS: List[Dict[str, str]] = [
 ]
 
 
+def referenceable_evidence() -> List["Evidence"]:
+    """About-the-subject evidence the mechanical clash cannot surface.
+
+    evidence_for only matches items with a place AND a time, so a phone call
+    (a time, no place) is invisible to it - which is why a learner could flatly
+    deny the calls the concealing brief warns are "on record" and pay nothing.
+    These items are real and on file; the detectives may put them to the learner
+    directly when the moment fits, e.g. when they deny contact. Ordered
+    weakest-first to match the disclosure philosophy.
+    """
+    ref = [ev for ev in EVIDENCE.values()
+           if ev.about_subject and (ev.window is None or ev.location is None)]
+    return sorted(ref, key=lambda e: e.strength)
+
+
 def evidence_for(claim_window: Tuple[time, time], location: Optional[str]) -> List[Evidence]:
     """Evidence that clashes with a claim of being at `location` during `window`.
 

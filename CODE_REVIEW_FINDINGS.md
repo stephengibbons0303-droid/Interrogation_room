@@ -9,10 +9,10 @@ Severity: **C1** critical (security / data loss / core-broken) · **C2** high
 (broken feature, real user harm) · **C3** medium (correctness, narrower) ·
 **Q** quality (cleanup — never a merge blocker).
 
-**Status: all nine C1 criticals FIXED** (commit on this branch; 211 engine tests,
-both whole-interview simulations green, real DB migrated). The evidence-window
-minute-clamp bug (finding 21) was fixed in passing with finding 2. C2/C3/Q remain
-open for the next pass.
+**Status: all nine C1 criticals AND all ten C2 highs FIXED** (216 engine tests,
+both simulations green, frontend typechecks, real DB migrated). The evidence-
+window minute-clamp bug (finding 21) was fixed in passing with finding 2. C3/Q
+remain open for the next pass.
 
 ---
 

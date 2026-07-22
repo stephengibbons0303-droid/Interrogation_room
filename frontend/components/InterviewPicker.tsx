@@ -16,6 +16,11 @@ export default function InterviewPicker({ email, onOpen, onSignOut }: Props) {
     const [interviews, setInterviews] = useState<InterviewSummary[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    // Deleting cascades away the transcript, claims and engine state the
+    // post-session assessment depends on, and there is no undo - so the ✕ arms a
+    // confirm rather than deleting on the first click.
+    const [confirmId, setConfirmId] = useState<string | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         try {
@@ -43,11 +48,15 @@ export default function InterviewPicker({ email, onOpen, onSignOut }: Props) {
     };
 
     const remove = async (id: string) => {
+        setDeletingId(id);
         try {
             await deleteInterview(id);
             await load();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Could not delete.');
+        } finally {
+            setDeletingId(null);
+            setConfirmId(null);
         }
     };
 
@@ -194,17 +203,47 @@ export default function InterviewPicker({ email, onOpen, onSignOut }: Props) {
                                         {/* A concluded interview can be re-read but not continued. */}
                                         {iv.outcome ? 'Review' : 'Resume'}
                                     </button>
-                                    <button
-                                        onClick={() => remove(iv.id)}
-                                        title="Delete interview"
-                                        className="px-2 py-2 rounded-lg text-xs font-mono"
-                                        style={{
-                                            color: 'var(--text-muted)',
-                                            border: '1px solid var(--border)',
-                                        }}
-                                    >
-                                        ✕
-                                    </button>
+                                    {confirmId === iv.id ? (
+                                        <>
+                                            <button
+                                                onClick={() => remove(iv.id)}
+                                                disabled={deletingId === iv.id}
+                                                className="px-3 py-2 rounded-lg text-xs font-mono uppercase tracking-wider"
+                                                style={{
+                                                    color: 'var(--red-accent)',
+                                                    border: '1px solid var(--red-accent)',
+                                                    background: 'rgba(212, 54, 74, 0.08)',
+                                                    opacity: deletingId === iv.id ? 0.5 : 1,
+                                                }}
+                                            >
+                                                {deletingId === iv.id ? 'Deleting…' : 'Delete'}
+                                            </button>
+                                            <button
+                                                onClick={() => setConfirmId(null)}
+                                                disabled={deletingId === iv.id}
+                                                title="Keep interview"
+                                                className="px-2 py-2 rounded-lg text-xs font-mono"
+                                                style={{
+                                                    color: 'var(--text-muted)',
+                                                    border: '1px solid var(--border)',
+                                                }}
+                                            >
+                                                ✕
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <button
+                                            onClick={() => setConfirmId(iv.id)}
+                                            title="Delete interview"
+                                            className="px-2 py-2 rounded-lg text-xs font-mono"
+                                            style={{
+                                                color: 'var(--text-muted)',
+                                                border: '1px solid var(--border)',
+                                            }}
+                                        >
+                                            ✕
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         ))}
