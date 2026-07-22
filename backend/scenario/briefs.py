@@ -42,7 +42,20 @@ SUBSTITUTION = "substitution"
 
 @dataclass(frozen=True)
 class Concealment:
-    """One half of the pair - a fixed thing the learner has to work around."""
+    """One half of the pair - a fixed thing the learner has to work around.
+
+    HOW TO WORD `text`: state plainly what happened, or what they must be ready
+    with. Do NOT write the instruction into it - the panel heading already
+    supplies that ("Do not admit" / "You must be able to say"), and repeating it
+    either duplicates the heading or, worse, negates it twice.
+
+    The false_alibi denial originally read "You were not at home...", which the
+    panel rendered as "Do not admit: You were not at home" - a double negative,
+    for an audience of second-language learners, immediately above a box telling
+    them to invent an evening at home. The two boxes read as contradicting each
+    other even though the intent behind them was consistent. Difficulty in this
+    app comes from producing the language, never from decoding the brief.
+    """
     kind: str                                       # DENIAL | SUBSTITUTION
     text: str                                       # short, plain, learner-facing
     # The span this belongs to. Both halves of a pair share it: that shared
@@ -108,14 +121,14 @@ BRIEFS: Dict[str, Brief] = {
         denial=Concealment(
             DENIAL,
             "You walked the towpath by the Canal Street bridge, from about 9:15 "
-            "until 10:20. Nobody can know you were there.",
+            "until 10:20.",
             window=(time(21, 15), time(22, 20)),
             location="bridge",
         ),
         substitution=Concealment(
             SUBSTITUTION,
-            "So you need somewhere else to have been for that hour - and you were "
-            "not on your own. Decide who was with you, and stay with them.",
+            "Somewhere else you were for that hour, and who you were with. "
+            "Decide now, and give the same answer every time.",
             window=(time(21, 15), time(22, 20)),
         ),
         awkward="You did know Emily, from work. There is no use pretending otherwise.",
@@ -131,14 +144,14 @@ BRIEFS: Dict[str, Brief] = {
         denial=Concealment(
             DENIAL,
             "You met Emily at the Canal Street bridge at about 9:40. You argued, "
-            "and you left her there. Do not admit you saw her at all.",
+            "and you left her there alive.",
             window=(time(21, 30), time(22, 0)),
             location="bridge",
         ),
         substitution=Concealment(
             SUBSTITUTION,
-            "You will be asked where you were instead, and who saw you. Give a "
-            "place and a person, and keep both the same every time you are asked.",
+            "Somewhere else you were for those twenty minutes, and someone who "
+            "saw you there. Keep both the same every time you are asked.",
             window=(time(21, 30), time(22, 0)),
         ),
         awkward="She rang you twice that day. The calls are on record - denying them will not work.",
@@ -153,15 +166,15 @@ BRIEFS: Dict[str, Brief] = {
                  "are going to have to say it again, in detail, and make it hold."),
         denial=Concealment(
             DENIAL,
-            "You were not at home. You were at a flat near the canal until late, "
-            "with someone whose name you will not give.",
+            "You were at a flat near the canal until late, with someone you will "
+            "never name.",
             window=(time(21, 15), time(23, 59)),
             location="bridge",
         ),
         substitution=Concealment(
             SUBSTITUTION,
-            "Your evening at home has to be invented in full - what you ate, what "
-            "you watched, who you spoke to. Expect to be asked for it backwards.",
+            "Your evening at home, invented in full - what you ate, what you "
+            "watched, who you spoke to. Expect to be asked for it backwards.",
             window=(time(19, 0), time(23, 59)),
         ),
         awkward="Your phone was on you all night, and it was not at your flat.",

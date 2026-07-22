@@ -506,6 +506,13 @@ for b in briefs_mod.BRIEFS.values():
           bool(sw and dw[0] < sw[1] and sw[0] < dw[1]),
           f"denial={dw} substitution={sw} - unrelated secrets do not compound")
     check(f"{b.id}: two things to conceal, no more", len(b.concealments) == 2)
+    # The panel heading already says "Do not admit". A denial phrased as a
+    # negation renders as a double negative on the briefing screen - which is
+    # exactly how false_alibi first shipped, reading as a flat contradiction of
+    # the substitution sitting underneath it.
+    check(f"{b.id}: the denial states what happened, not what did not",
+          " not " not in f" {b.denial.text.lower()} ",
+          f"'{b.denial.text}' - the heading supplies the negation; the text must not")
 
 canal = briefs_mod.BRIEFS["canal_walk"]          # bridge, 21:15-22:20
 
