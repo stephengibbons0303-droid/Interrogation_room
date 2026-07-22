@@ -997,8 +997,11 @@ check("saying 'about half six' four times is ONE anchor, not four",
       density.timepoints([Claim(id=f"r{i}", turn_seq=i, text="half six",
                                 start_min=18 * 60 + 30) for i in range(4)]) == 1)
 
-# The depth-follower must actually be able to win a slot once nothing is thin.
-c, st = ctx_with(Stage.PROBE, full_rich)
+# The depth-follower must actually win a slot once nothing is thin AND the
+# timeline is anchored - before that, sequence extraction rightly outranks it.
+anchored = full_rich + [probed(f"t{i}", 17, i * 7, 17, i * 7 + 5, "cafe",
+                               "the cafe", seq=5) for i in range(3)]
+c, st = ctx_with(Stage.PROBE, anchored)
 offered = [t.id for t in tac.available(c, "Chen")]
 check("volunteered detail gets followed one layer deeper",
       "detail_expansion" in offered[:3], str(offered[:5]))
@@ -1031,6 +1034,106 @@ ids = {t.id for t in tac.available(c, "Reynolds")}
 check("having asked twice, they stop asking",
       "reverse_chronology" not in ids and "retell_from_point" not in ids,
       "a third request is badgering, not technique")
+
+
+print("\nFALSE-PREMISE PROBE  (the engine misremembers; do they notice?)")
+
+
+def storied(turn=6):
+    """An account with a stated time and two places - material for a misquote."""
+    st = InterviewState(turn=turn)
+    dr.ingest(st, dr.Extraction(claims=[
+        {"text": "I was at the cafe until quarter to eight", "end_min": 19 * 60 + 45,
+         "location": "cafe", "place": "the cafe", "people": ["Sam"]},
+        {"text": "then dinner at the Indian restaurant", "start_min": 20 * 60,
+         "place": "the Indian restaurant"},
+    ], topic="the evening"), _an("x", responsive=True), None, 3)
+    return st
+
+
+st = storied()
+p = dr.plan_false_premise(st)
+check("a misquote is authored from their own claim", p is not None)
+check("the shifted time is an hour out, not a rounding",
+      p["kind"] == "time" and abs(p["true_min"] - (19 * 60 + 45)) == 0
+      and "18:45" in p["false"], str(p))
+check("a departure is misquoted as leaving, not arriving", "left" in p["false"], p["false"])
+check("their actual words ride along for the model", p["quote"].startswith("I was at the cafe"))
+
+st = storied()
+st.premises_posed = 1
+p2 = dr.plan_false_premise(st)
+check("the second probe draws a different misstatement", p2 != dr.plan_false_premise(storied()))
+
+st = storied()
+st.premise_open = {"posed_turn": 5}
+check("no new probe while one is pending", dr.plan_false_premise(st) is None)
+st.premise_open = None
+st.premises_posed = dr.MAX_PREMISES
+check("and the probe is spent after two", dr.plan_false_premise(st) is None)
+
+check("nothing to draw on -> no probe",
+      dr.plan_false_premise(InterviewState(turn=6)) is None,
+      "the probe misremembers; it never invents")
+
+# Availability follows the plan.
+c, st = ctx_with(Stage.PROBE, full_rich)
+c = dr.build_context(st, None)
+check("the tactic is offered when a misquote exists",
+      "false_premise" in {t.id for t in tac.available(c, "Reynolds")})
+st.premises_posed = dr.MAX_PREMISES
+c = dr.build_context(st, None)
+check("and withdrawn once spent",
+      "false_premise" not in {t.id for t in tac.available(c, "Reynolds")})
+
+# Scoring. Catching is credited; missing costs nothing at all.
+st = storied()
+st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "you left at about 18:45", "quote": "q", "posed_turn": 6}
+st.turn = 7
+before_exc, before_pressure = st.exculpation, st.pressure
+caught = dr.resolve_premise(st, True, [])
+check("a correction the model saw is caught", caught is True and st.premises_caught == 1)
+check("and credited as truthful recall", st.exculpation > before_exc)
+
+st = storied()
+st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "f", "quote": "q", "posed_turn": 6}
+st.turn = 7
+fresh = [Claim(id="r", turn_seq=7, text="no, quarter to eight", end_min=19 * 60 + 45)]
+check("restating the true time is a correction even if the model missed it",
+      dr.resolve_premise(st, None, fresh) is True)
+
+st = storied()
+st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "f", "quote": "q", "posed_turn": 6}
+st.turn = 7
+before_exc, before_pressure = st.exculpation, st.pressure
+caught = dr.resolve_premise(st, False, [])
+check("letting it slide is recorded as a miss",
+      caught is False and st.premises_missed == 1)
+check("and costs NOTHING - no pressure, no lost credit",
+      st.pressure == before_pressure and st.exculpation == before_exc,
+      "an L2 learner missing a misquote may be comprehension, not acquiescence")
+check("either way the probe closes", st.premise_open is None)
+
+st = storied()
+st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "f", "quote": "q", "posed_turn": 6}
+st.turn = 6
+check("never scored on the turn it was posed",
+      dr.resolve_premise(st, True, []) is None and st.premise_open is not None,
+      "their answer has not arrived yet")
+
+# The pending probe survives a resume.
+st = storied()
+st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 100,
+                   "false": "f", "quote": "q", "posed_turn": 6}
+st.premises_posed = 1
+round_tripped = InterviewState.from_dict(st.to_dict())
+check("a pending probe survives the JSON round-trip",
+      round_tripped.premise_open == st.premise_open
+      and round_tripped.premises_posed == 1)
 
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

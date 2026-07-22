@@ -723,6 +723,100 @@ def decide_outcome(state: InterviewState) -> Optional[str]:
     return Outcome.RELEASED.value
 
 
+# ── the false-premise probe ──────────────────────────────────────────────────
+
+# Twice per interview at most. The probe's power is that it is unforeseeable;
+# a third misquote teaches the learner to distrust every summary, which
+# poisons the legitimate ones the closure stage depends on.
+MAX_PREMISES = 2
+
+# How far the misquote moves a time. Well past the 30-minute rounding allowance
+# the engine itself grants, so an attentive learner has something real to catch,
+# and unambiguous when they restate the true value.
+_PREMISE_SHIFT = 60
+
+
+def plan_false_premise(state: InterviewState) -> Optional[Dict[str, Any]]:
+    """Author a deliberate misstatement of something they actually said.
+
+    The engine knows exactly what was said, so the misquote is generated here -
+    deterministically, from the claim store - and the model is only trusted to
+    deliver it casually. Two kinds: a stated time moved by an hour, or an event
+    relocated to another place from their own account. Only their own claims
+    are ever drawn on: the probe misremembers, it never invents.
+    """
+    if state.premise_open is not None or state.premises_posed >= MAX_PREMISES:
+        return None
+
+    live = [c for c in state.claims if not c.superseded_by and not c.restates]
+    # Prefer claims a couple of turns old: misquoting what they said seconds
+    # ago is not a memory test, it is a hearing test.
+    seasoned = [c for c in live if c.turn_seq <= state.turn - 2] or live
+
+    options: List[Dict[str, Any]] = []
+    all_places = [c.place for c in live if c.place]
+
+    for c in seasoned:
+        where = c.place or (f"the {c.location}" if c.location else None)
+
+        stated = c.end_min if c.end_min is not None else c.start_min
+        if stated is not None:
+            false_t = stated - _PREMISE_SHIFT
+            if false_t < 17 * 60:
+                false_t = stated + _PREMISE_SHIFT
+            verb = "left" if c.end_min is not None else "got there"
+            spot = f" {where}" if where else ""
+            options.append({
+                "claim_id": c.id, "kind": "time", "true_min": stated,
+                "quote": c.text,
+                "false": f"you {verb}{spot} at about {_fmt(false_t)}",
+            })
+
+        if c.place:
+            elsewhere = next((p for p in all_places
+                              if not same_place(p, c.place)), None)
+            if elsewhere:
+                options.append({
+                    "claim_id": c.id, "kind": "place", "true_min": None,
+                    "quote": c.text,
+                    "false": f"that this was at {elsewhere}",
+                })
+
+    if not options:
+        return None
+    return options[state.premises_posed % len(options)]
+
+
+def resolve_premise(state: InterviewState, corrected: Optional[bool],
+                    fresh_claims: List[Claim]) -> Optional[bool]:
+    """Settle a pending probe against the learner's reply.
+
+    `corrected` is the model's read of whether they pushed back. The fallback
+    is mechanical: restating the true time is a correction whether or not the
+    model noticed. Both only ever argue TOWARD caught - a miss is recorded, and
+    deliberately costs nothing.
+    """
+    p = state.premise_open
+    if not p or p.get("posed_turn") == state.turn:
+        return None                       # their answer has not arrived yet
+
+    caught = corrected is True
+    if not caught and p.get("true_min") is not None:
+        for c in fresh_claims:
+            for bound in (c.start_min, c.end_min):
+                if bound is not None and abs(bound - p["true_min"]) <= 15:
+                    caught = True
+
+    state.premise_open = None
+    if caught:
+        state.premises_caught += 1
+        # The CBCA credit: spontaneous correction marks genuine recall.
+        state.exculpation = min(1.0, state.exculpation + 0.08)
+    else:
+        state.premises_missed += 1
+    return caught
+
+
 # ── next evidence to put ─────────────────────────────────────────────────────
 
 _LEVELS = ["vague", "moderate", "precise"]
@@ -751,6 +845,7 @@ def build_context(state: InterviewState, brief: Optional[Brief],
     return tac.Context(
         state=state, timeline=report, brief=brief,
         thin=density.thin_topics(state.claims),
+        false_premise=plan_false_premise(state),
         last_learner_evasive=bool(analysis and analysis.evasive),
         last_learner_struggling=bool(analysis and analysis.struggling),
     )

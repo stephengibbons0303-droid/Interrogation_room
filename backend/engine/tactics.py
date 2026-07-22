@@ -31,6 +31,9 @@ class Context:
     # Topics the learner has raised but not yet said anything substantial about,
     # thinnest first. What the probe stage exists to empty.
     thin: List[TopicDensity] = field(default_factory=list)
+    # An engine-authored misquote of one of their own claims, ready to deliver,
+    # or None when the probe is spent, pending, or has nothing to draw on.
+    false_premise: Optional[dict] = None
     last_learner_evasive: bool = False
     last_learner_struggling: bool = False
 
@@ -285,6 +288,19 @@ _ALL: List[Tactic] = [
            "Ask whether there is any reason a particular thing might turn up - footage, a "
            "print, a record - without confirming that it exists.",
            precondition=_timeline_ready, cooldown=8),
+    # The false-premise probe. The engine authors the misquote; the model only
+    # delivers it. The sharpest mechanic in the design note, and nearly free:
+    # the claim store already knows exactly what was said, so "did they catch
+    # it" is measured, not guessed - and catching it is credited as the CBCA
+    # truthfulness marker it is, while missing it costs nothing.
+    Tactic("false_premise", EITHER, [Stage.PROBE, Stage.CHALLENGE],
+           "Misquote them, in passing: assert the false detail you have been given as "
+           "though it is what they told you, embedded in an ordinary question. Do not "
+           "pause on it or signal it in any way. If they correct you, accept the "
+           "correction gracefully and move on - the point has been made.",
+           precondition=lambda c: c.false_premise is not None,
+           cooldown=8, weight=2.7),
+
     Tactic("strategic_silence", "Reynolds", [Stage.PROBE, Stage.CHALLENGE],
            "Put one short, heavy question or observation and then stop dead. No follow-up, "
            "no softening. Two sentences at most.",

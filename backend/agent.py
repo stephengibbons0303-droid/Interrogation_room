@@ -166,6 +166,10 @@ class TurnOut(BaseModel):
     topic_complete: bool = False
     chen_vouched_claim: bool = Field(
         False, description="true if Chen pushed them to commit to a specific detail this turn")
+    premise_corrected: Optional[bool] = Field(
+        None, description=("ONLY when told a false detail was asserted last turn: true if "
+                           "the subject's reply pushed back on or corrected it, false if "
+                           "they let it stand. Null otherwise."))
     claims: List[ClaimOut] = Field(default_factory=list)
 
 
@@ -245,10 +249,16 @@ class InterrogationAgent:
         disclosure = dr.next_disclosure(self.state) if Stage(
             self.state.stage) is Stage.CHALLENGE else None
 
+        # The misquote only enters the prompt when the tactic is actually on
+        # offer - otherwise the model reads bait it is not allowed to use.
+        offered_premise = ctx.false_premise if any(
+            t.id == "false_premise" for t in options) else None
+
         system = prompts.build_system_prompt(
             speaker, self.state, ctx.timeline, options,
             disclosure=disclosure, aside=aside, closing=closing,
-            player_name=self.player_name, thin=ctx.thin)
+            player_name=self.player_name, thin=ctx.thin,
+            false_premise=offered_premise)
 
         recall = self._recall(user_message)
         if recall:
@@ -274,7 +284,7 @@ class InterrogationAgent:
               f"{len(self.history[-14:])} messages of history)")
 
         return self._apply(result, user_message, is_silence, prelim, ctx,
-                           speaker, reason, disclosure)
+                           speaker, reason, disclosure, offered_premise)
 
     def _context_messages(self):
         out = []
@@ -286,7 +296,8 @@ class InterrogationAgent:
         return out
 
     def _apply(self, result: TurnOut, user_message: str, is_silence: bool,
-               prelim, ctx, speaker: str, reason: str, disclosure) -> Dict[str, Any]:
+               prelim, ctx, speaker: str, reason: str, disclosure,
+               offered_premise=None) -> Dict[str, Any]:
         """Fold the model's reply back into engine state."""
         # Up to three: an aside is two detectives conferring plus the one who
         # then turns back to the subject.
@@ -341,8 +352,19 @@ class InterrogationAgent:
             topic=result.topic, topic_complete=result.topic_complete,
             chen_vouched_claim=result.chen_vouched_claim,
         )
+        claims_before = len(self.state.claims)
         new_contradictions = dr.ingest(self.state, extraction, final,
                                        self.brief, self.state.turn)
+
+        # Settle last turn's misquote against this reply - BEFORE arming a new
+        # one, or a probe posed this turn would be scored against the answer to
+        # the previous question.
+        dr.resolve_premise(self.state, result.premise_corrected,
+                           self.state.claims[claims_before:])
+        if result.tactic_used == "false_premise" and offered_premise:
+            self.state.premise_open = dict(offered_premise,
+                                           posed_turn=self.state.turn)
+            self.state.premises_posed += 1
 
         # Armed AFTER ingest on purpose. The claims folded in above came from
         # their answer to the previous question; the second telling does not

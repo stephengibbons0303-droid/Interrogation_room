@@ -159,10 +159,28 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
     return "\n".join(parts)
 
 
+def _premise_blocks(state: InterviewState, false_premise) -> str:
+    parts = []
+    if false_premise:
+        parts.append(
+            f"IF you use [false_premise], the misquote to plant is exactly this: "
+            f"assert that {false_premise['false']}. Their actual words were: "
+            f"\"{false_premise['quote']}\". Deliver it as settled fact, in passing.")
+    pending = state.premise_open
+    if pending and pending.get("posed_turn", 0) < state.turn:
+        parts.append(
+            f"LAST TURN a deliberately false detail was put to them - that "
+            f"{pending['false']} (they had actually said: \"{pending['quote']}\"). "
+            f"In your extraction, set premise_corrected to true ONLY if their reply "
+            f"pushed back on or corrected that detail. Do not mention the test.")
+    return "\n\n".join(parts)
+
+
 def build_system_prompt(speaker: str, state: InterviewState, report: TimelineReport,
                         options: List[Tactic], disclosure=None,
                         aside: bool = False, closing: bool = False,
-                        player_name: Optional[str] = None, thin=None) -> str:
+                        player_name: Optional[str] = None, thin=None,
+                        false_premise=None) -> str:
     """Assemble the turn's instructions.
 
     Deliberately excludes the learner's brief. The detectives work from what has
@@ -238,6 +256,8 @@ establishing the subject's movements between 5pm and midnight that day.
 {_state_block(state, report, thin)}
 
 {_evidence_block(state, disclosure)}
+
+{_premise_blocks(state, false_premise)}
 
 CHOOSE ONE OF THESE TACTICS AND REPORT WHICH YOU USED:
 {tactic_block}

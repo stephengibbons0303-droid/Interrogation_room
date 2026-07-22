@@ -163,6 +163,18 @@ class InterviewState:
     # also rises from evidence the learner had no way to avoid walking into.
     evasions: int = 0
 
+    # The false-premise probe. When a detective deliberately misquotes a stored
+    # claim - "you said you left before eight?" when they said after - this
+    # holds what was misstated until the learner's reply settles whether they
+    # caught it. Catching it is credited (spontaneous correction is a CBCA
+    # marker of truthful accounts); letting it slide costs NOTHING, because an
+    # L2 learner missing a misquote may be comprehension, not acquiescence.
+    # Keys: claim_id, kind, false, quote, true_min, posed_turn.
+    premise_open: Optional[Dict[str, Any]] = None
+    premises_posed: int = 0
+    premises_caught: int = 0
+    premises_missed: int = 0
+
     # The second telling. Armed when a detective asks for the account again -
     # backwards, or outward from a fixed point. While it is live, what the
     # learner says is COMPARED against the first telling rather than added to it,
