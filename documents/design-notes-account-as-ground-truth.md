@@ -84,17 +84,70 @@ an honest learner was detained over circumstantial evidence: there is no longer
 an external truth for them to be wrong about, so pressure can only come from
 their own account moving.
 
-## Open question
+### Except that it does not dissolve on its own
 
-**Do we keep a concealment goal?**
+Found while building it, 2026-07-22. The concealment pair puts a small external
+truth back, and the case evidence corroborates it. Every item that can clash -
+`cell_tower`, `witness_sighting`, `cctv_figure` - sits at the bridge between
+21:15 and 22:20, which is the same span the denial covers. So any cover story
+collides with the mast data *by construction*: concealing perfectly and
+concealing badly look identical from the evidence alone.
 
-Pure consistency is fair and generates real load, but a lie gives sharper
-jeopardy. A hybrid looks strongest: the learner invents the whole evening
-freely, but is told **one** fixed thing to hide - "you were near the canal at
-9:40, do not admit it". Everything else is theirs; their invention simply has to
-route around that single fact.
+Left there, the only route to `released` was to give no account of that hour at
+all - saying as little as possible as the winning strategy, which is the exact
+opposite of the point.
 
-That keeps the memory burden at one item while restoring a reason to be evasive.
+So the collision does not decide the ending. It is what the interview *feels*
+like; the verdict is made of what the learner did with their own account -
+whether they conceded it, whether it moved under them, whether they would talk
+at all. `decide_outcome` says so explicitly, and the test that pins it is
+"a consistent account walks even when the evidence looks terrible".
+
+## Decision: two things to conceal
+
+Settled 2026-07-22. Pure consistency is fair and generates real load, but a lie
+gives sharper jeopardy, so the concealment goal stays - and it is **two** fixed
+facts, not one. The learner invents the evening freely; their invention has to
+route around both.
+
+Count is the weaker half of that decision. Two unrelated secrets - "you were at
+the canal" and "you had been drinking" - are two things to dodge independently,
+and the difficulty adds rather than compounds. **Two secrets drawn from the same
+episode multiply**, because the cover invented for the first has to survive the
+questions aimed at the second.
+
+So the pair is entangled by construction, and the two halves are deliberately
+different kinds of work:
+
+- **A denial** - a fact to keep out. *You were on the towpath at 9:40.*
+- **A substitution** - the hole that leaves, which has to be filled and then
+  held. *So where were you instead, and who with?*
+
+A denial can survive on omission if nobody presses. A substitution cannot: it
+has to be produced on demand and then kept identical every time it is revisited.
+That is where the load actually sits, and it is language work rather than memory
+work.
+
+It also costs nothing to test. The fabricated alternative enters the claim store
+alongside everything else, so the second telling and the false-premise probe
+bite on the invented half automatically - no new machinery for the sharpest part
+of it.
+
+### Why the memory objection does not apply here
+
+The original argument for a single item was that a learner holding facts under
+time pressure is being given a memory test. That guards against the wrong cost.
+The brief is on screen for the whole interview and always has been - `BriefPanel`
+keeps it deliberately unhidden, on the grounds that remembering bullet points is
+not the exercise. Recall is already close to free. What a second secret adds is
+inventing and holding, which *is* the exercise.
+
+### What this does not change
+
+The account is still theirs, and these two facts are the only external truths in
+it. Pressure still comes from their own account moving rather than from the
+engine knowing better: being disbelieved is not being caught, and inferred spans
+still cannot establish a contradiction.
 
 ## What already exists
 
@@ -111,4 +164,5 @@ That keeps the memory burden at one item while restoring a reason to be evasive.
 - **Detail density per topic**, to drive probing toward thin areas
 - **Re-telling mode**, so a second pass is compared rather than accumulated
 - **False-premise generation**, and scoring whether it was corrected
-- Retiring or reducing `scenario/briefs.py` to at most a single concealment fact
+- Reducing `scenario/briefs.py` from a dealt account to an entangled concealment
+  pair - one denial, one substitution

@@ -92,17 +92,20 @@ class InterviewSummary(BaseModel):
     outcome: Optional[str] = None
 
 
-class BriefFactOut(BaseModel):
+class ConcealmentOut(BaseModel):
+    kind: str                              # denial | substitution
     text: str
 
 
 class BriefOut(BaseModel):
     """The learner's own brief. Deliberately shown to them - holding it in a
-    second language under pressure is the game; memorising it is not."""
+    second language under pressure is the game; memorising it is not.
+
+    No longer an account to recite. The evening is theirs to invent; what is
+    dealt is the pair they have to work around."""
     id: str
     premise: str
-    facts: List[BriefFactOut]
-    conceal: Optional[str] = None
+    concealments: List[ConcealmentOut]
     awkward: Optional[str] = None
 
 
@@ -209,8 +212,9 @@ def get_brief(interview_id: str, user: User = Depends(get_current_user),
         raise HTTPException(status_code=404, detail="No brief for this interview")
     return BriefOut(
         id=brief.id, premise=brief.premise,
-        facts=[BriefFactOut(text=f.text) for f in brief.facts],
-        conceal=brief.conceal, awkward=brief.awkward,
+        concealments=[ConcealmentOut(kind=c.kind, text=c.text)
+                      for c in brief.concealments],
+        awkward=brief.awkward,
     )
 
 

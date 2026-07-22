@@ -242,7 +242,7 @@ class InterrogationAgent:
         system = prompts.build_system_prompt(
             speaker, self.state, ctx.timeline, options,
             disclosure=disclosure, aside=aside, closing=closing,
-            player_name=self.player_name)
+            player_name=self.player_name, thin=ctx.thin)
 
         recall = self._recall(user_message)
         if recall:

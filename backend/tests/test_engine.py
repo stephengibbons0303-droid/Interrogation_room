@@ -28,6 +28,16 @@ def block(cid, start_h, start_m, end_h, end_m, loc, text="", seq=1):
                  location=loc)
 
 
+def probed(cid, start_h, start_m, end_h, end_m, loc, topic, seq=1):
+    """A claim with substance in it: a place, a time, somebody named, something
+    done and something sensory. What a topic looks like after it has been probed,
+    as against the bare assertions `block` produces."""
+    return Claim(id=cid, turn_seq=seq,
+                 text=f"{cid} - it was loud in there and I saw the barman",
+                 start_min=start_h * 60 + start_m, end_min=end_h * 60 + end_m,
+                 location=loc, activity="waiting", people=["Sam"], topic=topic)
+
+
 print("\nTIMELINE VALIDATOR")
 
 # Full account, no problems.
@@ -139,7 +149,8 @@ from engine import tactics as tac                       # noqa: E402
 from engine.analysis import analyse as _an              # noqa: E402
 from engine.state import (ChenStance, Contradiction,    # noqa: E402
                           InterviewState, Outcome, Stage)
-from scenario.briefs import BRIEFS                      # noqa: E402
+from engine import density                             # noqa: E402
+from scenario import briefs as briefs_mod               # noqa: E402
 
 
 def ctx_with(stage, claims=(), **kw):
@@ -158,9 +169,26 @@ check("unanticipated question BLOCKED before a timeline exists", "unanticipated_
 full_blocks = [block("a", 17, 0, 20, 0, "cafe"),
                block("b", 20, 0, 20, 45, "station"),
                block("c", 20, 45, 23, 59, "home")]
-ready, _ = ctx_with(Stage.PROBE, full_blocks)
+bare, _ = ctx_with(Stage.PROBE, full_blocks)
+ids = {t.id for t in tac.available(bare, "Reynolds")}
+# The whole point of the density gate: covering the evening is not the same as
+# having said anything about it, and reversing a row of bare assertions proves
+# nothing about anyone.
+check("reverse chronology STILL BLOCKED while the account is bare",
+      "reverse_chronology" not in ids,
+      "three assertions with nobody in them is not an account worth reversing")
+check("directed probing offered instead", "press_thin_detail" in ids, str(sorted(ids)))
+
+full_rich = [probed("a", 17, 0, 20, 0, "cafe", "the cafe"),
+             probed("b", 20, 0, 20, 45, "station", "the cafe", seq=2),
+             probed("c", 20, 45, 22, 30, "home", "getting home", seq=3),
+             probed("d", 22, 30, 23, 59, "home", "getting home", seq=4)]
+ready, _ = ctx_with(Stage.PROBE, full_rich)
 ids = {t.id for t in tac.available(ready, "Reynolds")}
-check("reverse chronology UNLOCKED once the timeline is complete", "reverse_chronology" in ids)
+check("reverse chronology UNLOCKED once the account has substance",
+      "reverse_chronology" in ids, str(sorted(ids)))
+check("directed probing stands down once nothing is thin",
+      "press_thin_detail" not in ids)
 
 # Stage gating.
 engage, _ = ctx_with(Stage.ENGAGE, full_blocks)
@@ -253,13 +281,15 @@ dr.update_pressure(st, [Contradiction(id="e", kind="evidence", turn_seq=1, detai
                    _an("I was home.", responsive=True), rep)
 check("evidence contradiction raises pressure most", st.pressure >= 0.12)
 
-# The detectives cannot see the brief. On a concealing brief the learner is
-# MEANT to depart from it - that is them playing the part, not being caught.
+# A breach is the learner's own admission, so unlike everything else the engine
+# knows, the detectives can hear it. It costs - but modestly, because conceding
+# something should change the room rather than end the interview on the spot.
 st = InterviewState()
-dr.update_pressure(st, [Contradiction(id="b", kind="brief", turn_seq=1, detail="d")],
-                   _an("I was home all evening.", responsive=True), rep)
-check("departing from the hidden brief costs NOTHING", st.pressure == 0.0,
-      f"pressure={st.pressure} - the detectives cannot see the brief")
+dr.update_pressure(st, [Contradiction(id="b", kind="breach", turn_seq=1, detail="d")],
+                   _an("I was down by the canal, yes.", responsive=True), rep)
+check("conceding the concealed fact raises pressure", st.pressure > 0)
+check("but conceding it does not slam pressure to the ceiling", st.pressure <= 0.15,
+      f"pressure={st.pressure}")
 
 # A single bad turn must not end the interview outright.
 st = InterviewState()
@@ -268,12 +298,12 @@ many = [Contradiction(id=f"e{i}", kind="evidence", turn_seq=1, detail="d")
 dr.update_pressure(st, many, _an("I'm not answering.", responsive=False), rep)
 check("pressure gain is capped per turn", st.pressure <= 0.25, f"{st.pressure}")
 
-# Concealing successfully and never being caught should be a win.
+# Concealing successfully and never being caught should be a win. Everyone is
+# concealing now, so if this did not walk them out, nobody would ever walk.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.1)
-st.contradictions.append(Contradiction(id="b", kind="brief", turn_seq=1, detail="d"))
-check("a lie that was never caught -> released",
+check("holding the pair together the whole way -> released",
       dr.decide_outcome(st) == Outcome.RELEASED.value,
-      "they beat the interview; the engine knowing they lied is not evidence")
+      "they beat the interview; the engine knowing they concealed is not evidence")
 
 # Evidence only counts once it has actually been put to them.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
@@ -324,27 +354,65 @@ st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.05)
 check("clean account -> released", dr.decide_outcome(st) == Outcome.RELEASED.value)
 
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.45)
-check("shaky account -> under investigation",
+st.contradictions.append(Contradiction(id="s", kind="self", turn_seq=1, detail="story moved"))
+check("an account that moved -> under investigation",
       dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
 
-# Detaining requires BOTH: evidence put to them, and them actually having lied.
+# Would not talk, as against could not. analysis.evasive already excludes the
+# learner who is struggling, so this can never catch low proficiency.
+st = InterviewState(stage=Stage.CLOSURE.value, evasions=3)
+check("stonewalling the whole interview -> under investigation",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value,
+      "otherwise saying nothing is the winning strategy")
+
+# Detaining requires their own account to have given them away - either they
+# conceded the concealed fact, or their story moved and evidence was put on it.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
 st.contradictions += [
     Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
-    Contradiction(id="b", kind="brief", turn_seq=1, detail="they lied"),
+    Contradiction(id="b", kind="breach", turn_seq=1, detail="placed themselves there"),
 ]
-check("lied AND caught on evidence -> detained",
+check("conceded it AND caught on evidence -> detained",
       dr.decide_outcome(st) == Outcome.DETAINED.value)
 
-# The one that matters most: an honest learner facing circumstantial evidence.
+# A breach with nothing to corroborate it is an admission, not a case.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.2)
+st.contradictions.append(Contradiction(id="b", kind="breach", turn_seq=1, detail="d"))
+check("conceding it alone -> under investigation, not detained",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
+
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
+st.contradictions += [
+    Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
+    Contradiction(id="s1", kind="self", turn_seq=1, detail="story moved"),
+    Contradiction(id="s2", kind="self", turn_seq=2, detail="story moved again"),
+]
+check("story falling apart AND caught on evidence -> detained",
+      dr.decide_outcome(st) == Outcome.DETAINED.value)
+
+# The one that matters most, and the reason the evidence clash cannot decide
+# this. Every clashable item sits at the bridge inside the span every brief tells
+# them to conceal, so a cover story ALWAYS collides with the mast data. If that
+# collision decided the ending, the only way to walk would be to give no account
+# of that hour - and saying as little as possible would be the winning strategy.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.95)
 st.contradictions.append(Contradiction(id="e", kind="evidence", turn_seq=1,
                                        detail="a witness saw someone matching your description",
                                        raised=True))
-check("an honest, consistent account is NEVER detained",
-      dr.decide_outcome(st) != Outcome.DETAINED.value,
-      "being disbelieved is not being caught lying - and punishing an honest "
-      "account teaches the learner that talking freely is dangerous")
+check("a consistent account walks even when the evidence looks terrible",
+      dr.decide_outcome(st) == Outcome.RELEASED.value,
+      "being disbelieved is not being caught - and a collision they could not "
+      "have avoided must not be what decides it")
+
+# Holding the story together is what wins; letting it move is what loses.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.95)
+st.contradictions += [
+    Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
+    Contradiction(id="s1", kind="self", turn_seq=2, detail="moved"),
+    Contradiction(id="s2", kind="self", turn_seq=3, detail="moved again"),
+]
+check("the same evidence DOES bite once their story has moved twice",
+      dr.decide_outcome(st) == Outcome.DETAINED.value)
 
 st = InterviewState(stage=Stage.PROBE.value, pressure=0.9)
 check("no outcome before closure", dr.decide_outcome(st) is None)
@@ -363,6 +431,139 @@ st.disclosed["cell_tower"] = "moderate"
 check("then precisely", dr.next_disclosure(st) == ("cell_tower", "precise"))
 st.disclosed["cell_tower"] = "precise"
 check("and never beyond precise", dr.next_disclosure(st) == ("cell_tower", "precise"))
+
+
+print("\nDETAIL DENSITY  (what makes probing directed)")
+
+sparse = [Claim(id="1", turn_seq=1, text="I was at the cafe.",
+                location="cafe", topic="the cafe")]
+d = density.assess(sparse)["the cafe"]
+check("a bare topic is thin", d.thin, f"score={d.score}")
+check("and it names what is missing",
+      any("nobody named" in m for m in d.missing()), str(d.missing()))
+check("it asks for a time when none was given",
+      any("clock time" in m for m in d.missing()), str(d.missing()))
+
+d = density.assess(full_rich)["the cafe"]
+check("a probed topic is not thin", not d.thin, f"score={d.score}")
+check("sensory detail is counted from their own words", d.sensory > 0)
+
+# Distinct, not tallied. Repeating one name in five claims is one person, and
+# counting it five times would call an empty topic rich.
+same = [probed(f"r{i}", 18, 0, 19, 0, "cafe", "the cafe", seq=i) for i in range(5)]
+check("repeating one name is one person, not five",
+      density.assess(same)["the cafe"].people == 1)
+
+dropped = Claim(id="x", turn_seq=1, text="I was at the cafe.",
+                location="cafe", topic="the cafe")
+dropped.superseded_by = "y"
+check("a claim they have since replaced is not detail their account carries",
+      "the cafe" not in density.assess([dropped]))
+
+check("one rich topic is not yet a testable account",
+      not density.testable(full_rich[:2]))
+check("two rich topics are", density.testable(full_rich))
+check("a bare account is never testable however much time it covers",
+      not density.testable(full_blocks))
+
+# Density must never be a stick. It says where to ask next, and nothing else.
+st = InterviewState()
+before = st.pressure
+dr.update_pressure(st, [], _an("Yes.", responsive=True), tl.build(sparse))
+check("a thin account does NOT raise pressure", st.pressure <= before,
+      "a learner short of vocabulary is doing the thing the app exists to make them do")
+
+
+print("\nPROBE PATIENCE  (probing ends on substance, not on a counter)")
+
+st = InterviewState(stage=Stage.PROBE.value, turn=5)
+st.claims = list(full_blocks)
+st.topics_covered = ["identity", "the evening", "Emily"]
+dr.advance_stage(st, tl.build(st.claims))
+check("probing continues while the account is bare", st.stage == Stage.PROBE.value)
+
+st.turn = dr.PROBE_PATIENCE
+dr.advance_stage(st, tl.build(st.claims))
+check("but a learner who cannot produce detail is moved on, not held there",
+      st.stage == Stage.CHALLENGE.value,
+      "holding them in probing would make low proficiency mean a longer interview")
+
+st = InterviewState(stage=Stage.PROBE.value, turn=5)
+st.claims = list(full_rich)
+st.topics_covered = ["identity", "the evening", "Emily"]
+dr.advance_stage(st, tl.build(st.claims))
+check("a rich account reaches challenge without waiting",
+      st.stage == Stage.CHALLENGE.value)
+
+
+print("\nTHE CONCEALMENT PAIR")
+
+for b in briefs_mod.BRIEFS.values():
+    check(f"{b.id}: the denial is checkable (place and window)",
+          bool(b.denial.location and b.denial.window_min))
+    dw, sw = b.denial.window_min, b.substitution.window_min
+    check(f"{b.id}: the pair is entangled - both halves share a span",
+          bool(sw and dw[0] < sw[1] and sw[0] < dw[1]),
+          f"denial={dw} substitution={sw} - unrelated secrets do not compound")
+    check(f"{b.id}: two things to conceal, no more", len(b.concealments) == 2)
+
+canal = briefs_mod.BRIEFS["canal_walk"]          # bridge, 21:15-22:20
+
+
+def ingested(claims, brief=canal):
+    st = InterviewState()
+    return st, dr.ingest(st, dr.Extraction(claims=claims),
+                         _an("x", responsive=True), brief, 1)
+
+
+_, found = ingested([{"text": "I walked along the canal about half nine",
+                      "start_min": 21 * 60 + 30, "location": "bridge"}])
+check("placing themselves at the concealed spot IS a breach",
+      any(c.kind == "breach" for c in found))
+
+_, found = ingested([{"text": "I walked the canal at lunchtime",
+                      "start_min": 13 * 60, "location": "bridge"}])
+check("the right place at the wrong time is not a breach",
+      not any(c.kind == "breach" for c in found))
+
+_, found = ingested([{"text": "I was at home all evening",
+                      "start_min": 21 * 60 + 30, "location": "home"}])
+check("the wrong place in the window is not a breach",
+      not any(c.kind == "breach" for c in found))
+
+# The rule the whole engine is built on: no confession extracted from the
+# engine's own arithmetic.
+_, found = ingested([{"text": "I know the canal well", "location": "bridge"}])
+check("naming the place with no time stated is NOT a breach",
+      not any(c.kind == "breach" for c in found),
+      "the timeline would happily invent a bound; an invented bound is not a confession")
+
+st, found = ingested([{"text": "I was by the bridge", "start_min": 21 * 60 + 20,
+                       "location": "bridge"}])
+dr.ingest(st, dr.Extraction(claims=[{"text": "yes, the bridge, about ten to ten",
+                                     "start_min": 21 * 60 + 50, "location": "bridge"}]),
+          _an("x", responsive=True), canal, 2)
+check("conceding it twice is still one breach",
+      len([c for c in st.contradictions if c.kind == "breach"]) == 1)
+
+# Density is measured per topic, so the tag has to survive ingest - otherwise
+# every claim lands in one bucket and no topic ever reads as thin.
+st = InterviewState()
+dr.ingest(st, dr.Extraction(claims=[{"text": "the cafe was busy", "location": "cafe"}],
+                            topic="the cafe"), _an("x", responsive=True), canal, 1)
+check("the live topic is carried onto the claim", st.claims[0].topic == "the cafe")
+
+st = InterviewState(current_topic="the walk home")
+dr.ingest(st, dr.Extraction(claims=[{"text": "it was raining", "location": "home"}]),
+          _an("x", responsive=True), canal, 1)
+check("a claim with no topic named falls to the topic already running",
+      st.claims[0].topic == "the walk home")
+
+check("a retired brief id deals a pair rather than stranding the interview",
+      briefs_mod.get("innocent_missed_calls") is not None)
+check("and the same retired id always deals the same pair",
+      briefs_mod.get("innocent_missed_calls").id
+      == briefs_mod.get("innocent_missed_calls").id)
 
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

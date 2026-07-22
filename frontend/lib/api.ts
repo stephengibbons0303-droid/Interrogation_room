@@ -67,11 +67,19 @@ export interface ChatReply {
     tactic?: string | null;
 }
 
+/** One half of the pair the learner has to work around. A `denial` is a fact to
+ *  keep out of the account; a `substitution` is the hole that leaves, which has
+ *  to be filled in and then held identical every time it is revisited. */
+export interface Concealment {
+    kind: 'denial' | 'substitution';
+    text: string;
+}
+
+/** No longer an account to recite - the evening is the learner's to invent. */
 export interface Brief {
     id: string;
     premise: string;
-    facts: { text: string }[];
-    conceal?: string | null;
+    concealments: Concealment[];
     awkward?: string | null;
 }
 

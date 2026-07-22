@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from scenario.briefs import Brief
+from engine import density
+from engine.density import TopicDensity
 from engine.state import ChenStance, InterviewState, Stage
 from engine.timeline import TimelineReport
 
@@ -26,6 +28,9 @@ class Context:
     state: InterviewState
     timeline: TimelineReport
     brief: Optional[Brief] = None
+    # Topics the learner has raised but not yet said anything substantial about,
+    # thinnest first. What the probe stage exists to empty.
+    thin: List[TopicDensity] = field(default_factory=list)
     last_learner_evasive: bool = False
     last_learner_struggling: bool = False
 
@@ -54,8 +59,29 @@ class Tactic:
 # ── preconditions ────────────────────────────────────────────────────────────
 
 def _timeline_ready(c: Context) -> bool:
-    """An account exists worth attacking. The gate the old build never had."""
+    """An account covering enough of the evening exists. The gate the old build
+    never had - though covering the evening is not the same as being worth
+    attacking, which is what _account_testable adds."""
     return c.timeline.complete
+
+
+def _account_testable(c: Context) -> bool:
+    """Enough SUBSTANCE to be worth attacking, not merely enough time covered.
+
+    An account can span the whole evening and still be a row of bare assertions.
+    Running that backwards proves nothing about anybody - the delta between two
+    tellings is only meaningful when there was something in the first one.
+
+    Deliberately the same rule the probe stage exits on, rather than a second one
+    that happens to look similar: "worth attacking" should not mean two different
+    things depending on who is asking.
+    """
+    return c.timeline.complete and density.testable(c.state.claims)
+
+
+def _account_thin(c: Context) -> bool:
+    """Something they have raised is still empty, and worth pressing."""
+    return bool(c.thin)
 
 
 def _has_open_contradiction(c: Context) -> bool:
@@ -138,6 +164,16 @@ _ALL: List[Tactic] = [
            "Pick one small detail they mentioned and open it out - what were they watching, "
            "who served them, what was the weather doing.",
            cooldown=4),
+
+    # Directed probing. funnel_probe picks a topic; this one is aimed at the
+    # specific hole the engine has measured, which is what turns "press them a
+    # bit more" into a question worth asking. Outranks funnel_probe so that
+    # anything empty gets filled before the account is treated as testable.
+    Tactic("press_thin_detail", EITHER, [Stage.PROBE],
+           "One part of their account is still empty. Press it for the exact thing it is "
+           "missing - who else was there, what the place was like, what time it was. ONE "
+           "question, aimed squarely at the gap you are told about.",
+           precondition=_account_thin, cooldown=2, weight=2.6),
     Tactic("topic_switch", "Reynolds", [Stage.PROBE, Stage.CHALLENGE],
            "Abruptly change topic away from what you were pursuing, then come back to it "
            "later. Rehearsed accounts survive linear questioning; they do not survive this.",
@@ -148,13 +184,15 @@ _ALL: List[Tactic] = [
            "in, what the staff looked like, which way the queue faced.",
            precondition=_timeline_ready, cooldown=5),
 
-    # The technique this whole rebuild was prompted by. It cannot fire until an
-    # account actually exists to be reversed.
+    # The technique this whole rebuild was prompted by. It needs an account with
+    # something IN it, not merely one that covers the evening: the jeopardy is
+    # the difference between the first telling and the second, and a bare list
+    # of assertions cannot differ from itself in any way worth noticing.
     Tactic("reverse_chronology", EITHER, [Stage.PROBE, Stage.CHALLENGE],
            "Ask them to tell the evening again BACKWARDS - from the end of the night to "
            "the start. Say plainly that you want it in reverse order. Then let them work. "
            "Rehearsed accounts are built forwards and come apart when run backwards.",
-           precondition=_timeline_ready, cooldown=12, weight=2.5),
+           precondition=_account_testable, cooldown=12, weight=2.5),
 
     # CHALLENGE — only after both agendas are exhausted.
     Tactic("challenge_contradiction", EITHER, [Stage.CHALLENGE],

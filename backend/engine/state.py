@@ -65,6 +65,10 @@ class Claim:
     location: Optional[str] = None
     activity: Optional[str] = None
     people: List[str] = field(default_factory=list)
+    # Which topic was live when they said it. Carried on the claim rather than
+    # derived later, because detail density is measured per topic and the only
+    # moment the topic is known for certain is the turn it was extracted on.
+    topic: Optional[str] = None
     # Set when a later claim replaces this one - that replacement is itself the
     # contradiction, so the original is kept rather than overwritten.
     superseded_by: Optional[str] = None
@@ -85,7 +89,12 @@ class Claim:
 @dataclass
 class Contradiction:
     id: str
-    kind: str                             # self | brief | evidence
+    # self     - their account moved
+    # evidence - their account walked into something the police hold
+    # breach   - they conceded the very thing they were told to conceal. Their
+    #            own words, so unlike the other two the detectives can act on it
+    #            without needing to disbelieve anybody.
+    kind: str
     turn_seq: int
     detail: str
     claim_id: Optional[str] = None
@@ -131,6 +140,12 @@ class InterviewState:
     # back off rather than escalate: a learner losing the thread of overheard
     # dialogue is a comprehension problem, not evasion.
     nonresponsive_streak: int = 0
+
+    # Turns of DELIBERATE dodging - refusals, and fluent deflection from someone
+    # plainly not struggling. Counted separately from pressure because the ending
+    # needs to tell "would not talk" from "could not", and pressure cannot: it
+    # also rises from evidence the learner had no way to avoid walking into.
+    evasions: int = 0
 
     outcome: Optional[str] = None
 

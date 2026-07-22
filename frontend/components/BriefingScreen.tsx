@@ -28,9 +28,11 @@ export default function BriefingScreen({ interviewId, onReady }:
     const spokenText = (b: Brief) => [
         'Before you go in, this is what you know.',
         b.premise,
-        ...b.facts.map(f => f.text),
-        b.conceal ? `You must not admit: ${b.conceal}` : '',
+        ...b.concealments.map(c => c.kind === 'denial'
+            ? `You must not admit this. ${c.text}`
+            : `And you must be ready to say this. ${c.text}`),
         b.awkward || '',
+        'The rest of the evening is yours. Make it up as you like, but remember what you say.',
         'Take your time. When you are ready, they will begin.',
     ].filter(Boolean).join(' ');
 
@@ -80,10 +82,26 @@ export default function BriefingScreen({ interviewId, onReady }:
                     What you know
                 </h1>
 
+                {/* A failed load used to render the message and nothing else, so
+                    the only way past this screen disappeared with it. Whatever
+                    went wrong, they must still be able to open the door. */}
                 {error && (
-                    <p className="text-sm font-mono text-center" style={{ color: 'var(--red-accent)' }}>
-                        {error}
-                    </p>
+                    <div className="space-y-4 text-center">
+                        <p className="text-sm font-mono" style={{ color: 'var(--red-accent)' }}>
+                            {error}
+                        </p>
+                        <button
+                            onClick={begin}
+                            className="px-8 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                            style={{
+                                background: 'var(--teal-dim)',
+                                border: '1px solid var(--teal)',
+                                color: 'var(--teal)',
+                            }}
+                        >
+                            Go in anyway
+                        </button>
+                    </div>
                 )}
 
                 {brief && (
@@ -93,25 +111,27 @@ export default function BriefingScreen({ interviewId, onReady }:
                             {brief.premise}
                         </p>
 
-                        <ul className="space-y-2">
-                            {brief.facts.map((f, i) => (
-                                <li key={i} className="text-base font-mono flex gap-3 leading-relaxed">
-                                    <span style={{ color: 'var(--text-muted)' }}>{i + 1}.</span>
-                                    <span>{f.text}</span>
-                                </li>
-                            ))}
-                        </ul>
-
-                        {brief.conceal && (
-                            <p className="text-base font-mono px-4 py-3 rounded leading-relaxed"
-                                style={{
-                                    color: 'var(--red-accent)',
-                                    background: 'rgba(212, 54, 74, 0.08)',
-                                    border: '1px solid var(--red-accent)',
-                                }}>
-                                Do not admit: {brief.conceal}
-                            </p>
-                        )}
+                        {brief.concealments.map((c, i) => {
+                            const denial = c.kind === 'denial';
+                            return (
+                                <div key={i} className="px-4 py-3 rounded space-y-1"
+                                    style={{
+                                        background: denial
+                                            ? 'rgba(212, 54, 74, 0.08)'
+                                            : 'rgba(212, 160, 54, 0.08)',
+                                        border: `1px solid ${denial ? 'var(--red-accent)' : 'var(--amber)'}`,
+                                    }}>
+                                    <p className="text-xs font-mono uppercase tracking-widest"
+                                        style={{ color: denial ? 'var(--red-accent)' : 'var(--amber)' }}>
+                                        {denial ? 'Do not admit' : 'You must be able to say'}
+                                    </p>
+                                    <p className="text-base font-mono leading-relaxed"
+                                        style={{ color: 'var(--text-primary)' }}>
+                                        {c.text}
+                                    </p>
+                                </div>
+                            );
+                        })}
 
                         {brief.awkward && (
                             <p className="text-sm font-mono leading-relaxed"
@@ -119,6 +139,13 @@ export default function BriefingScreen({ interviewId, onReady }:
                                 {brief.awkward}
                             </p>
                         )}
+
+                        <p className="text-sm font-mono leading-relaxed"
+                            style={{ color: 'var(--text-secondary)' }}>
+                            Everything else about Thursday is yours to invent. Say whatever
+                            you like happened - but remember what you say, because they
+                            will ask you again.
+                        </p>
 
                         <div className="flex items-center justify-between gap-3 pt-4">
                             <button

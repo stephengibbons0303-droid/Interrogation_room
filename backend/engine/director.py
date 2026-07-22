@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from scenario import case
 from scenario.briefs import Brief
+from engine import density
 from engine import tactics as tac
 from engine.analysis import TurnAnalysis
 from engine.state import (CHEN_ARC, STAGE_ORDER, ChenStance, Claim,
@@ -27,10 +28,11 @@ LEAD_SHARE_TARGET = 0.75
 
 MAX_TURNS = 40
 
-# A brief conflict needs a real overlap, not a passing one. Describing a single
-# journey in stages ("walked to the station", "took the train home") otherwise
-# reads as departing from the truth when it is simply a different segmentation.
-_BRIEF_CONFLICT_MINUTES = 30
+# How long the probe stage will wait for an account worth attacking before moving
+# on regardless. Without this, a learner who cannot produce much detail would be
+# held in probing indefinitely - a longer, flatter interview as a punishment for
+# lower proficiency, which is exactly backwards.
+PROBE_PATIENCE = 18
 
 
 # ── speaker selection ────────────────────────────────────────────────────────
@@ -111,6 +113,10 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     """Fold a learner turn into state and return any NEW contradictions."""
     found: List[Contradiction] = []
 
+    # Settled before the claims are built: density is measured per topic, and the
+    # only moment a claim's topic is known for certain is the turn it arrived on.
+    topic = extraction.topic or state.current_topic
+
     new_ids = []
     for raw in extraction.claims:
         claim = Claim(
@@ -122,10 +128,26 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             location=raw.get("location"),
             activity=raw.get("activity"),
             people=raw.get("people") or [],
+            topic=topic,
             vouched_by_chen=extraction.chen_vouched_claim,
         )
         state.claims.append(claim)
         new_ids.append(claim.id)
+
+        # A breach is checked on the RAW claim, before the timeline fills in the
+        # bound speech left out. Conceding the concealed place at a time they
+        # actually stated is their own admission; an invented bound is the engine
+        # guessing, and the engine does not get to extract a confession from its
+        # own arithmetic.
+        if brief is not None:
+            stated = claim.start_min if claim.start_min is not None else claim.end_min
+            if brief.breached_by(claim.location, stated) and not any(
+                    c.kind == "breach" for c in state.contradictions + found):
+                found.append(Contradiction(
+                    id=str(uuid.uuid4()), kind="breach", turn_seq=turn_seq,
+                    detail=f"they have placed themselves there: '{claim.text}'",
+                    claim_id=claim.id,
+                ))
 
     # Detection runs over NORMALISED claims: speech gives one bound, not two, so
     # comparing raw windows found nothing at all. See timeline.normalised.
@@ -155,32 +177,12 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
                     was_vouched=prior_row.vouched_by_chen,
                 ))
 
-        # Against the brief - the ground truth they were dealt. Recorded so the
-        # ending can tell an honest account from a lie; it never raises pressure,
-        # because the detectives cannot see the brief.
-        # Never on an inferred span. "I was home BY quarter to nine" states an
-        # arrival, and filling in a start turns it into a claim to have been at
-        # home for the preceding half hour - which they never said. Concluding
-        # from that that they lied is the engine convicting them on its own
-        # guesswork, and it is the difference between an honest run ending in
-        # release and ending in a cell.
-        if brief and claim.location and not claim.inferred:
-            for fact in brief.committed_blocks():
-                if not fact.location or fact.location == claim.location:
-                    continue
-                f_start = fact.window[0].hour * 60 + fact.window[0].minute
-                f_end = fact.window[1].hour * 60 + fact.window[1].minute
-                overlap = min(f_end, claim.end_min) - max(f_start, claim.start_min)
-                # Substantial overlap only. Narrating one journey in different
-                # segments - "walked to the station", "took the train home" -
-                # produces incidental label clashes that are not lies.
-                if overlap >= _BRIEF_CONFLICT_MINUTES:
-                    found.append(Contradiction(
-                        id=str(uuid.uuid4()), kind="brief", turn_seq=turn_seq,
-                        detail=f"account departs from what actually happened: {fact.text}",
-                        claim_id=cid,
-                    ))
-                    break
+        # There is deliberately no check here for the account departing from what
+        # "really" happened. Under the dealt-account design that was the central
+        # test; now the evening is the learner's own invention, so there is no
+        # external truth for it to depart from. The only fixed facts are the
+        # concealment pair, and conceding one of those is handled above as a
+        # breach - on their own words rather than on the engine knowing better.
 
         # Against the evidence - what makes SUE mechanical rather than
         # hand-written: they commit, and the engine knows what they walked into.
@@ -213,13 +215,16 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
 
 # Pressure may only come from things the detectives could actually perceive.
 #
-# A "brief" contradiction scores ZERO. It means the account departs from what
-# really happened - but on a concealing brief that IS the game: the learner is
-# supposed to be hiding something, and the detectives cannot see the brief. Only
-# the engine knows, and it uses that knowledge to decide the ending, not to
-# punish the lie as it is being told. Scoring it made pressure hit the ceiling in
-# seven turns purely for playing the part properly.
-_PRESSURE_FOR = {"self": 0.10, "brief": 0.0, "evidence": 0.15}
+# A breach is the one thing here they hear directly - the learner has just placed
+# themselves at the concealed spot in their own words. It still scores modestly
+# rather than decisively. The consequence of conceding belongs in the ending, not
+# in a spike that slams pressure to the ceiling the moment it happens; a learner
+# who lets it slip and then holds everything else together should feel the room
+# change, not lose on the spot.
+#
+# There is no "brief" entry any more. Departing from a dealt account was the old
+# test, and there is no dealt account to depart from.
+_PRESSURE_FOR = {"self": 0.10, "breach": 0.10, "evidence": 0.15}
 
 # One bad turn should not end the interview. Several claims can clash with the
 # same story, and without a ceiling they compound into an instant conviction.
@@ -245,6 +250,7 @@ def update_pressure(state: InterviewState, new_contradictions: List[Contradictio
         gain += 0.05
     if analysis.evasive:
         gain += 0.06
+        state.evasions += 1
 
     state.pressure += min(gain, _MAX_PRESSURE_PER_TURN)
 
@@ -308,8 +314,14 @@ def advance_stage(state: InterviewState, report: TimelineReport) -> None:
         stage = Stage.FREE_RECALL
     elif stage is Stage.FREE_RECALL and (report.blocks or state.turn >= 5):
         stage = Stage.PROBE
+    # Probing does not end because enough ground has been covered - it ends when
+    # the account is dense enough to be worth attacking. Challenging a list of
+    # bare assertions is what made the techniques fire into a vacuum. The
+    # patience limit is the escape hatch: a learner who cannot produce detail is
+    # moved on rather than held here.
     elif stage is Stage.PROBE and report.complete and (
-            state.contradictions or len(state.topics_covered) >= 3):
+            state.contradictions or len(state.topics_covered) >= 3) and (
+            density.testable(state.claims) or state.turn >= PROBE_PATIENCE):
         stage = Stage.CHALLENGE
     elif stage is Stage.CHALLENGE and (
             (not state.open_contradictions and state.turn >= 14)
@@ -325,28 +337,49 @@ def advance_stage(state: InterviewState, report: TimelineReport) -> None:
 def decide_outcome(state: InterviewState) -> Optional[str]:
     """What happens to them. Only meaningful once Closure is reached.
 
-    Judged on what the detectives actually got, not on what the engine knows.
-    A learner who conceals successfully and is never caught out walks - which is
-    the correct result: they beat the interview.
+    Everyone is concealing now, so "did they lie" is no longer the question - it
+    is a given, and judging on it would detain every learner every time. The
+    question is whether their own account gave them away:
+
+      * they conceded the concealed fact (a breach - their own words), or
+      * their story moved under them and evidence was put to them on it, or
+      * they would not talk at all.
+
+    Holding both halves of the pair together for a whole interview is a win, and
+    it walks them out of the building - however badly the evidence reads. That is
+    the point of the shift: the ending turns on what the learner did, never on
+    what the engine happens to know about where they were.
     """
     if Stage(state.stage) is not Stage.CLOSURE:
         return None
 
     caught = [c for c in state.contradictions if c.kind == "evidence" and c.raised]
     wobbled = [c for c in state.contradictions if c.kind == "self"]
-    # The engine knows whether they actually lied. The detectives do not.
-    deceptive = any(c.kind == "brief" for c in state.contradictions) or len(wobbled) >= 2
+    breached = [c for c in state.contradictions if c.kind == "breach"]
 
-    # Being disbelieved is not the same as being caught lying. Much of the
-    # evidence here is circumstantial by design - a witness who saw "someone
-    # matching your description", a camera that filmed "a figure". An innocent
-    # learner who tells the truth and holds to it walks, however bad it looks,
-    # and that consistency under pressure is exactly the behaviour worth
-    # rewarding. Detaining an honest account would teach them that talking
-    # freely is punished, which is the opposite of the point.
-    if deceptive and caught and state.pressure >= 0.6:
+    # They put themselves there. With anything to corroborate it, that is enough
+    # to hold them; on its own it is an admission and no more.
+    if breached:
+        return (Outcome.DETAINED.value
+                if (caught or wobbled)
+                else Outcome.UNDER_INVESTIGATION.value)
+
+    # Walking into the evidence does NOT decide this, and that is deliberate.
+    #
+    # Every item that can clash sits at the bridge between 21:15 and 22:20, which
+    # is the same span every brief tells them to conceal. So a cover story is
+    # guaranteed to collide with the mast data - concealing perfectly and
+    # concealing badly look identical here. Letting the collision decide the
+    # ending would mean the only way to walk was to give no account of that hour
+    # at all, which rewards saying as little as possible: the exact opposite of
+    # what this app is for. The collision is what the interview FEELS like; it is
+    # not what the verdict is made of.
+    #
+    # The verdict is made of what they did with their own account: whether they
+    # conceded it, whether it moved under them, whether they would talk at all.
+    if len(wobbled) >= 2 and caught:
         return Outcome.DETAINED.value
-    if caught or wobbled or state.pressure >= 0.4:
+    if wobbled or state.evasions >= 3:
         return Outcome.UNDER_INVESTIGATION.value
     return Outcome.RELEASED.value
 
@@ -378,6 +411,7 @@ def build_context(state: InterviewState, brief: Optional[Brief],
     report = build_timeline(state.claims)
     return tac.Context(
         state=state, timeline=report, brief=brief,
+        thin=density.thin_topics(state.claims),
         last_learner_evasive=bool(analysis and analysis.evasive),
         last_learner_struggling=bool(analysis and analysis.struggling),
     )

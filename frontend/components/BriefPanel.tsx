@@ -7,8 +7,13 @@ import { getBrief, type Brief } from '../lib/api';
  * The learner's own brief, kept within reach for the whole interview.
  *
  * Deliberately not hidden. Holding a cover story together in a second language
- * while someone picks at it is the exercise; remembering five bullet points is
- * not. If the card were hidden this would quietly become a memory test.
+ * while someone picks at it is the exercise; remembering two lines is not. If
+ * the card were hidden this would quietly become a memory test.
+ *
+ * The two halves are shown differently on purpose. The denial is a thing to keep
+ * out and reads as a warning; the substitution is work they owe the detectives
+ * and reads as an instruction. Presenting them identically would flatten them
+ * into "two secrets", which is exactly the distinction that carries the load.
  */
 export default function BriefPanel({ interviewId, defaultOpen = false }:
     { interviewId: string; defaultOpen?: boolean }) {
@@ -33,7 +38,7 @@ export default function BriefPanel({ interviewId, defaultOpen = false }:
                 className="w-full flex items-center justify-between text-xs font-mono uppercase tracking-widest"
                 style={{ color: 'var(--amber)' }}
             >
-                <span>Your account {brief.conceal ? '· confidential' : ''}</span>
+                <span>Your account · confidential</span>
                 <span style={{ color: 'var(--text-muted)' }}>{open ? '−' : '+'}</span>
             </button>
 
@@ -44,26 +49,25 @@ export default function BriefPanel({ interviewId, defaultOpen = false }:
                         {brief.premise}
                     </p>
 
-                    <ul className="space-y-1">
-                        {brief.facts.map((f, i) => (
-                            <li key={i} className="text-xs font-mono flex gap-2"
-                                style={{ color: 'var(--text-primary)' }}>
-                                <span style={{ color: 'var(--text-muted)' }}>·</span>
-                                <span>{f.text}</span>
-                            </li>
-                        ))}
-                    </ul>
-
-                    {brief.conceal && (
-                        <p className="text-xs font-mono px-2 py-1 rounded"
-                            style={{
-                                color: 'var(--red-accent)',
-                                background: 'rgba(212, 54, 74, 0.08)',
-                                border: '1px solid var(--red-accent)',
-                            }}>
-                            Do not admit: {brief.conceal}
-                        </p>
-                    )}
+                    {brief.concealments.map((c, i) => {
+                        const denial = c.kind === 'denial';
+                        return (
+                            <p key={i} className="text-xs font-mono px-2 py-1 rounded leading-relaxed"
+                                style={{
+                                    color: denial ? 'var(--red-accent)' : 'var(--amber)',
+                                    background: denial
+                                        ? 'rgba(212, 54, 74, 0.08)'
+                                        : 'rgba(212, 160, 54, 0.08)',
+                                    border: `1px solid ${denial ? 'var(--red-accent)' : 'var(--amber)'}`,
+                                }}>
+                                <span className="uppercase tracking-widest">
+                                    {denial ? 'Do not admit' : 'You must be able to say'}
+                                </span>
+                                <br />
+                                {c.text}
+                            </p>
+                        );
+                    })}
 
                     {brief.awkward && (
                         <p className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>

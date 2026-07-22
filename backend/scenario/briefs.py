@@ -1,133 +1,182 @@
-"""The learner's secret brief - the hidden hand they are dealt each session.
+"""The learner's brief: the two things they must keep out of their account.
 
-This is what gives the engine a ground truth. Without one, "contradiction" can
-only ever mean the learner disagreeing with themselves, and no outcome could be
-fair: nothing they said could be true or false, only consistent or not.
+This module used to deal a whole evening - five short lines that WERE the truth,
+which the engine then tested the learner against. The first real playtest showed
+why that cannot work: a card with five lines on it gives nothing to be pinned
+down on, so unanticipated questions and reverse chronology fired into a vacuum.
+You cannot catch someone out on detail they were never given.
 
-Two design constraints, both pedagogical rather than dramatic:
+The evening is now theirs to invent, and their own account is the ground truth -
+see documents/design-notes-account-as-ground-truth.md. What is dealt instead is a
+concealment PAIR, and the two halves are deliberately different kinds of work:
 
-  * Facts are SHORT and few. The learner has to hold these while producing a
-    second language under time pressure. A brief that is a memory test stops
-    being a language test.
-  * The brief stays visible during the interview. The difficulty should come
-    from using the language, not from recalling the card.
+  * a DENIAL - one fact to keep out of the account.
+  * a SUBSTITUTION - the hole that leaves, which has to be filled and then held
+    identical every time it is revisited.
 
-Innocent briefs are not soft options: each carries a fact that is true but
-looks bad, so the learner must volunteer something uncomfortable and survive it.
-That is the honest-but-awkward pressure that makes an innocent run playable.
+A denial survives on omission if nobody presses. A substitution cannot: it has to
+be produced on demand, and whatever they invent lands in the claim store next to
+everything else, so the retelling tests it for free.
+
+The pair is entangled by construction - both halves belong to the same span of
+the evening. Two unrelated secrets are two independent dodges and the difficulty
+merely adds; two secrets drawn from one episode compound, because the cover
+invented for the first has to survive the questions aimed at the second.
+
+Two constraints carried over from the old design, both still load-bearing:
+
+  * The brief is SHORT, and it stays visible throughout (see BriefPanel). Recall
+    is not the exercise - inventing and holding is. A learner reciting a card in
+    a second language is taking a memory test.
+  * Nothing here is ever shown to the detectives. They work from what has been
+    said and what the police hold; the engine does the comparing.
 """
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import time
 from typing import Dict, List, Optional, Tuple
 
+DENIAL = "denial"
+SUBSTITUTION = "substitution"
+
 
 @dataclass(frozen=True)
-class BriefFact:
-    id: str
+class Concealment:
+    """One half of the pair - a fixed thing the learner has to work around."""
+    kind: str                                       # DENIAL | SUBSTITUTION
     text: str                                       # short, plain, learner-facing
+    # The span this belongs to. Both halves of a pair share it: that shared
+    # window is what makes them entangled rather than merely two secrets.
     window: Optional[Tuple[time, time]] = None
+    # Only the denial carries one. It is the single thing the engine can check
+    # mechanically - putting themselves here, in the window, is a breach.
     location: Optional[str] = None
+
+    @property
+    def window_min(self) -> Optional[Tuple[int, int]]:
+        """The window in minutes past midnight, to match Claim and the timeline."""
+        if self.window is None:
+            return None
+        start, end = self.window
+        return (start.hour * 60 + start.minute, end.hour * 60 + end.minute)
 
 
 @dataclass(frozen=True)
 class Brief:
     id: str
     tier: int                                       # 1 = gentlest
-    concealing: bool
     premise: str                                    # one line of framing
-    facts: List[BriefFact]
-    # What the learner is trying not to say. None for an innocent brief.
-    conceal: Optional[str] = None
-    # Engine-only. Never shown to the learner; used to judge their account.
-    truth: str = ""
-    # True but awkward - the learner has to own this or look evasive.
+    denial: Concealment
+    substitution: Concealment
+    # True, and unhelpful to deny - the police can prove it. Giving them
+    # something honest to concede keeps the whole account from becoming a wall,
+    # and steers them off a denial the evidence would kill in one move.
     awkward: Optional[str] = None
+    # Engine-only. Never shown to the learner and never to the detectives.
+    truth: str = ""
 
-    def committed_blocks(self) -> List[BriefFact]:
-        return [f for f in self.facts if f.window is not None]
+    @property
+    def concealments(self) -> List[Concealment]:
+        return [self.denial, self.substitution]
+
+    def breached_by(self, location: Optional[str],
+                    stated_min: Optional[int]) -> bool:
+        """Have they just put themselves at the concealed place and time?
+
+        Takes a time the learner ACTUALLY stated, never one the timeline filled
+        in. An invented bound is good enough to measure coverage and not good
+        enough to treat as a confession - the same rule that keeps the engine
+        from convicting anyone on its own guesswork.
+        """
+        window = self.denial.window_min
+        if not (self.denial.location and window) or location != self.denial.location:
+            return False
+        return stated_min is not None and window[0] <= stated_min <= window[1]
 
 
+# Every pair below is anchored on evidence that actually exists in case.py, so
+# the substitution has something to collide with rather than merely being a lie
+# nobody can test.
 BRIEFS: Dict[str, Brief] = {
 
-    "innocent_missed_calls": Brief(
-        id="innocent_missed_calls",
+    "canal_walk": Brief(
+        id="canal_walk",
         tier=1,
-        concealing=False,
-        premise="You did nothing wrong on Thursday. But you ignored Emily's calls, and that is going to look bad.",
-        facts=[
-            BriefFact("cafe", "You were at the Blue Door cafe until about 8pm.",
-                      (time(17, 30), time(20, 0)), "cafe"),
-            BriefFact("train", "You took the train home from Whitcomb Street.",
-                      (time(20, 0), time(20, 45)), "station"),
-            BriefFact("home", "You were home from about 8:45pm. Alone.",
-                      (time(20, 45), time(23, 59)), "home"),
-            BriefFact("knew", "You knew Emily from work. Not well."),
-            BriefFact("calls", "Emily rang you twice. You ignored both calls."),
-        ],
-        awkward="You ignored her calls because you had argued about work. You are not proud of it.",
-        truth="Innocent. Nowhere near the canal. The ignored calls are the only thing against them.",
+        premise=("Thursday evening is yours. Whatever you say you did, you did - "
+                 "invent it freely, and remember what you invent. Two things are "
+                 "fixed."),
+        denial=Concealment(
+            DENIAL,
+            "You walked the towpath by the Canal Street bridge, from about 9:15 "
+            "until 10:20. Nobody can know you were there.",
+            window=(time(21, 15), time(22, 20)),
+            location="bridge",
+        ),
+        substitution=Concealment(
+            SUBSTITUTION,
+            "So you need somewhere else to have been for that hour - and you were "
+            "not on your own. Decide who was with you, and stay with them.",
+            window=(time(21, 15), time(22, 20)),
+        ),
+        awkward="You did know Emily, from work. There is no use pretending otherwise.",
+        truth=("Walked the towpath alone. Nothing to do with Emily. The phone mast "
+               "covers the whole hour they have to account for."),
     ),
 
-    "innocent_wrong_place": Brief(
-        id="innocent_wrong_place",
+    "canal_meeting": Brief(
+        id="canal_meeting",
         tier=2,
-        concealing=False,
-        premise="You were near the canal that night, for a completely ordinary reason. Nobody can confirm it.",
-        facts=[
-            BriefFact("cafe", "You were at the Blue Door cafe until about 9pm.",
-                      (time(18, 0), time(21, 0)), "cafe"),
-            BriefFact("walk", "You walked home past the canal, arriving about 10:20pm.",
-                      (time(21, 0), time(22, 20)), "bridge"),
-            BriefFact("alone", "You were alone. Nobody saw you."),
-            BriefFact("knew", "You knew Emily. You had lunch with her sometimes."),
-            BriefFact("nosee", "You did not see Emily that night."),
-        ],
-        awkward="You really were on that towpath at the time she vanished. That is simply true.",
-        truth="Innocent, but genuinely in the wrong place. Every piece of evidence fits them, and none of it means anything.",
+        premise=("Thursday evening is yours to tell however you like - except for "
+                 "twenty minutes of it, which you are going to have to cover."),
+        denial=Concealment(
+            DENIAL,
+            "You met Emily at the Canal Street bridge at about 9:40. You argued, "
+            "and you left her there. Do not admit you saw her at all.",
+            window=(time(21, 30), time(22, 0)),
+            location="bridge",
+        ),
+        substitution=Concealment(
+            SUBSTITUTION,
+            "You will be asked where you were instead, and who saw you. Give a "
+            "place and a person, and keep both the same every time you are asked.",
+            window=(time(21, 30), time(22, 0)),
+        ),
+        awkward="She rang you twice that day. The calls are on record - denying them will not work.",
+        truth=("Was there, argued about money she had lent them, left her alive. "
+               "Innocent of her disappearance, concealing the meeting."),
     ),
 
-    "concealing_argument": Brief(
-        id="concealing_argument",
-        tier=2,
-        concealing=True,
-        premise="You met Emily at the bridge and argued. She was alive when you left. You do not want to admit you were there.",
-        facts=[
-            BriefFact("met", "You met Emily at the Canal Street bridge at about 9:40pm.",
-                      (time(21, 40), time(22, 0)), "bridge"),
-            BriefFact("money", "You argued about money she had lent you."),
-            BriefFact("left", "You left her there at about 10pm. She was fine."),
-            BriefFact("walked", "You walked home. You got in about 10:20pm.",
-                      (time(22, 0), time(22, 20)), "home"),
-        ],
-        conceal="That you were at the bridge at all, and that you met Emily.",
-        truth="Was there. Argued about a debt. Left her alive. Innocent of her disappearance, guilty of hiding the meeting.",
-    ),
-
-    "concealing_alibi": Brief(
-        id="concealing_alibi",
+    "false_alibi": Brief(
+        id="false_alibi",
         tier=3,
-        concealing=True,
-        premise="You were somewhere you should not have been, with someone you must not name. Your alibi is a lie you have to hold.",
-        facts=[
-            BriefFact("claim", "Your story: you were home all evening from 7pm.",
-                      (time(19, 0), time(23, 59)), "home"),
-            BriefFact("really", "Really you were at a flat near the canal until midnight."),
-            BriefFact("who", "You were with someone whose name you will not give."),
-            BriefFact("nosee", "You did not see Emily. That part is true."),
-        ],
-        conceal="Where you actually were, and who you were with.",
-        truth="Nothing to do with Emily. Covering an affair. The false alibi will collapse under the phone evidence.",
+        premise=("You have already told people you were at home all evening. You "
+                 "are going to have to say it again, in detail, and make it hold."),
+        denial=Concealment(
+            DENIAL,
+            "You were not at home. You were at a flat near the canal until late, "
+            "with someone whose name you will not give.",
+            window=(time(21, 15), time(23, 59)),
+            location="bridge",
+        ),
+        substitution=Concealment(
+            SUBSTITUTION,
+            "Your evening at home has to be invented in full - what you ate, what "
+            "you watched, who you spoke to. Expect to be asked for it backwards.",
+            window=(time(19, 0), time(23, 59)),
+        ),
+        awkward="Your phone was on you all night, and it was not at your flat.",
+        truth=("Nothing to do with Emily - covering an affair. The false alibi has "
+               "to span five hours, which is what makes it hard to hold."),
     ),
 }
 
 
 def deal(tier: Optional[int] = None, rng: Optional[random.Random] = None) -> Brief:
-    """Deal a brief for a new interview.
+    """Deal a concealment pair for a new interview.
 
-    Random by design: the learner should not know from the outset whether they
-    are innocent this time, which is what makes the detectives' suspicion feel
-    like something to answer rather than a foregone conclusion.
+    Random by design: the learner should not know from the outset how much they
+    are carrying, which is what makes the detectives' interest feel like
+    something to answer rather than a foregone conclusion.
     """
     r = rng or random
     pool = [b for b in BRIEFS.values() if tier is None or b.tier == tier]
@@ -137,4 +186,17 @@ def deal(tier: Optional[int] = None, rng: Optional[random.Random] = None) -> Bri
 
 
 def get(brief_id: str) -> Optional[Brief]:
-    return BRIEFS.get(brief_id)
+    """Look up a brief by id.
+
+    Interviews started under the old dealt-account design reference briefs that
+    no longer exist. They cannot be resumed as they were - the premise itself
+    changed - so rather than 404 the briefing screen and strand the learner
+    behind a dead button, an unknown id deals a pair deterministically. The
+    interview continues under the current design.
+    """
+    brief = BRIEFS.get(brief_id)
+    if brief is not None:
+        return brief
+    if not brief_id:
+        return None
+    return deal(rng=random.Random(brief_id))

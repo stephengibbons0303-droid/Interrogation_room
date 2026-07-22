@@ -123,7 +123,7 @@ def _evidence_block(state: InterviewState, disclosure) -> str:
     return "\n\n".join(lines)
 
 
-def _state_block(state: InterviewState, report: TimelineReport) -> str:
+def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> str:
     parts = [f"Stage: {Stage(state.stage).value}. Turn {state.turn}."]
     if report.blocks:
         parts.append("Their account so far: " + report.summary())
@@ -136,17 +136,29 @@ def _state_block(state: InterviewState, report: TimelineReport) -> str:
                      "\n".join(f"  - {c.detail}" for c in open_c[:3]))
     if state.topics_covered:
         parts.append("Topics already covered: " + ", ".join(state.topics_covered))
+
+    # Where the account is still empty. This is measured from their own words,
+    # so it is fair game for the detectives in a way the brief never is - a real
+    # interviewer notices perfectly well when someone has said nothing much.
+    if thin:
+        worst = thin[0]
+        gaps = "; ".join(worst.missing()[:3]) or "no substance yet"
+        parts.append(f"THIN IN THEIR ACCOUNT - '{worst.topic}': {gaps}.\n"
+                     "  Detail here is what makes the rest of the interview possible. "
+                     "Ask for it plainly, one thing at a time.")
     return "\n".join(parts)
 
 
 def build_system_prompt(speaker: str, state: InterviewState, report: TimelineReport,
                         options: List[Tactic], disclosure=None,
                         aside: bool = False, closing: bool = False,
-                        player_name: Optional[str] = None) -> str:
+                        player_name: Optional[str] = None, thin=None) -> str:
     """Assemble the turn's instructions.
 
     Deliberately excludes the learner's brief. The detectives work from what has
-    been said and what the police hold - nothing else.
+    been said and what the police hold - nothing else. They are not told what is
+    being concealed, only where the account is thin, which is something anyone
+    sitting across the table would notice for themselves.
     """
     if aside or closing:
         who = ("You are writing BOTH detectives. DI James Reynolds and DS Sarah Chen.\n\n"
@@ -213,7 +225,7 @@ THE CASE:
 A woman, Emily Parker, has not been seen since Thursday evening. You are
 establishing the subject's movements between 5pm and midnight that day.
 
-{_state_block(state, report)}
+{_state_block(state, report, thin)}
 
 {_evidence_block(state, disclosure)}
 
@@ -227,6 +239,13 @@ Also extract, from the subject's LAST message only:
   - any factual claims about where they were, when, and with whom
   - times as minutes past midnight (9:30pm = 1290); locations must be one of
     cafe, bridge, home, station, or null if somewhere else
+  - `activity` and `people` whenever they give them. These are not optional
+    extras: what someone did and who was there with them is how the account
+    becomes checkable, and a claim recorded without them reads as empty.
+  - `topic`: a short, STABLE label for what this stretch of the interview is
+    about ("the cafe", "the walk home", "Emily"). Reuse the same label while you
+    stay on the same ground - it is how the account is tracked, and a new label
+    every turn scatters it into fragments that each look bare.
   - whether their message actually addressed the question you asked
   - whether you (as Chen) pushed them to commit to a specific detail this turn
 """
