@@ -12,10 +12,12 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
  * moment the first question arrived, so there was no chance to take it in. It is
  * now its own step, with no time pressure and nothing else happening.
  *
- * It is spoken as well as shown, in a third voice that is deliberately not one
- * of the detectives. Reading and hearing the same words together is the point:
- * the learner is about to have to hold this under pressure, and dual input gives
- * them a much better chance of retaining it.
+ * It CAN be spoken as well as shown, in a third voice that is deliberately not
+ * one of the detectives - reading and hearing the same words together gives the
+ * learner a much better chance of holding it under pressure later. But it is
+ * offered rather than imposed: it used to speak itself on arrival, and a brief
+ * this long takes seconds to synthesise, so the narration would begin just as
+ * the learner was ready to move on and then talk over the first question.
  */
 export default function BriefingScreen({ interviewId, onReady }:
     { interviewId: string; onReady: () => void }) {
@@ -23,7 +25,12 @@ export default function BriefingScreen({ interviewId, onReady }:
     const [speaking, setSpeaking] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
-    const spokenOnce = useRef(false);
+    // Set the moment the learner leaves this screen. Pausing audioRef is not
+    // enough on its own: the narration has to be fetched and synthesised before
+    // there is any audio object to pause, and if they press on during that gap
+    // the ref is still null. The sound then arrives to an empty room and reads
+    // the brief over the top of the detective.
+    const gone = useRef(false);
 
     const spokenText = (b: Brief) => [
         'Before you go in, this is what you know.',
@@ -46,26 +53,31 @@ export default function BriefingScreen({ interviewId, onReady }:
             });
             if (!res.ok) { setSpeaking(false); return; }
             const url = URL.createObjectURL(await res.blob());
+
+            // They pressed on while this was being synthesised. Throw it away
+            // rather than playing it into a room that has moved on.
+            if (gone.current) { URL.revokeObjectURL(url); setSpeaking(false); return; }
+
             const audio = new Audio(url);
             audioRef.current = audio;
             audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); };
             audio.onerror = () => { URL.revokeObjectURL(url); setSpeaking(false); };
-            // Autoplay is allowed here: reaching this screen took a click.
+            // Allowed to play: getting here took a deliberate press.
             await audio.play().catch(() => setSpeaking(false));
         } catch {
             setSpeaking(false);
         }
     }, []);
 
+    // Deliberately does NOT speak on arrival - see the note on the component.
     useEffect(() => {
-        getBrief(interviewId).then(b => {
-            setBrief(b);
-            if (!spokenOnce.current) { spokenOnce.current = true; speak(b); }
-        }).catch(() => setError('Could not load your brief.'));
-        return () => { audioRef.current?.pause(); };
-    }, [interviewId, speak]);
+        getBrief(interviewId)
+            .then(setBrief)
+            .catch(() => setError('Could not load your brief.'));
+        return () => { gone.current = true; audioRef.current?.pause(); };
+    }, [interviewId]);
 
-    const begin = () => { audioRef.current?.pause(); onReady(); };
+    const begin = () => { gone.current = true; audioRef.current?.pause(); onReady(); };
 
     return (
         <div className="flex flex-col h-screen items-center justify-center px-6 overflow-y-auto"
@@ -159,7 +171,7 @@ export default function BriefingScreen({ interviewId, onReady }:
                                     opacity: speaking ? 0.5 : 1,
                                 }}
                             >
-                                {speaking ? 'Reading…' : 'Read it again'}
+                                {speaking ? 'Reading…' : '▶  Read it to me'}
                             </button>
 
                             <button
