@@ -47,6 +47,11 @@ class ChenStance(str, Enum):
 CHEN_ARC = [ChenStance.NEUTRAL, ChenStance.RAPPORT, ChenStance.ADVOCATE,
             ChenStance.IDENTIFYING, ChenStance.MINIMISING]
 
+# Backwards, and outward from a fixed point. Two is the whole repertoire, and
+# each request costs several turns of an interview that runs to forty at the
+# outside; a third is badgering rather than technique.
+MAX_RETELLINGS = 2
+
 
 class Outcome(str, Enum):
     RELEASED = "released"
@@ -72,6 +77,10 @@ class Claim:
     # Set when a later claim replaces this one - that replacement is itself the
     # contradiction, so the original is kept rather than overwritten.
     superseded_by: Optional[str] = None
+    # The id of the claim this one re-states, when it arrived during a second
+    # telling. Such a claim is a repeat of ground already given, so it is kept
+    # for the record but must not count again as detail the account carries.
+    restates: Optional[str] = None
     # True when Chen explicitly encouraged the learner to commit to this. The
     # sting fires only on one of these.
     vouched_by_chen: bool = False
@@ -147,9 +156,41 @@ class InterviewState:
     # also rises from evidence the learner had no way to avoid walking into.
     evasions: int = 0
 
+    # The second telling. Armed when a detective asks for the account again -
+    # backwards, or outward from a fixed point. While it is live, what the
+    # learner says is COMPARED against the first telling rather than added to it,
+    # which is the whole point: the jeopardy is the delta between the two.
+    retelling_from_turn: Optional[int] = None
+    retelling_until_turn: Optional[int] = None
+    # How many times they have been asked to give it again. Each request costs
+    # several turns of an interview that runs to forty at the outside, so this
+    # is capped: a third time is badgering, not technique.
+    retellings_asked: int = 0
+
     outcome: Optional[str] = None
 
     # ── derived helpers ──────────────────────────────────────────────────────
+
+    def is_retelling(self, turn_seq: int) -> bool:
+        """Is a claim arriving on `turn_seq` a re-statement rather than news?
+
+        Strictly after the turn the request was made on: the detective asks on
+        one turn and the answer arrives on the next, so the turn that armed it
+        is not itself part of the second telling.
+        """
+        if self.retelling_from_turn is None or self.retelling_until_turn is None:
+            return False
+        return self.retelling_from_turn < turn_seq <= self.retelling_until_turn
+
+    @property
+    def retelling_active(self) -> bool:
+        """Are we mid-re-telling as this turn is being planned?"""
+        return self.is_retelling(self.turn)
+
+    @property
+    def may_ask_retelling(self) -> bool:
+        """May a detective ask for the account again at all?"""
+        return not self.retelling_active and self.retellings_asked < MAX_RETELLINGS
 
     @property
     def live_claims(self) -> List[Claim]:

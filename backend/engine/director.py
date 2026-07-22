@@ -16,7 +16,7 @@ from engine.analysis import TurnAnalysis
 from engine.state import (CHEN_ARC, STAGE_ORDER, ChenStance, Claim,
                           Contradiction, InterviewState, Outcome, Stage)
 from engine.timeline import (TimelineReport, build as build_timeline,
-                             normalised as normalise)
+                             fmt as _fmt, normalised as normalise)
 
 LEAD = "Reynolds"
 SECOND = "Chen"
@@ -33,6 +33,27 @@ MAX_TURNS = 40
 # held in probing indefinitely - a longer, flatter interview as a punishment for
 # lower proficiency, which is exactly backwards.
 PROBE_PATIENCE = 18
+
+# Turns a second telling stays live once asked for. An evening takes several
+# turns to walk through again; after that the mode lapses rather than treating
+# everything said for the rest of the interview as a re-statement.
+RETELLING_TURNS = 6
+
+# Tactics that ask for the account again. Firing one of these arms the mode.
+RETELLING_TACTICS = {"reverse_chronology", "retell_from_point"}
+
+
+
+# How far a stated time may move between tellings before it is a real change.
+# People round, and "about nine" one minute is "half nine" the next without
+# anybody lying; the threshold has to clear ordinary imprecision.
+_RETELLING_TIME_SHIFT = 30
+
+# How much of the first telling has to be gone over again before the second one
+# counts as given. Measured in ground covered rather than claims re-stated: an
+# account of four stretches of the evening might have been built over ten turns,
+# and demanding ten re-statements would be a bar nobody could clear.
+_RETELLING_DONE = 0.8
 
 
 # ── speaker selection ────────────────────────────────────────────────────────
@@ -108,6 +129,112 @@ class Extraction:
     chen_vouched_claim: bool = False       # Chen pushed them to commit to this
 
 
+def arm_retelling(state: InterviewState, tactic_id: str) -> None:
+    """A detective has just asked for the account again. Open the window.
+
+    Called after the turn's claims have been folded in, because the message
+    being ingested is their answer to the PREVIOUS question - the re-telling
+    itself does not arrive until the turn after this one.
+    """
+    if tactic_id in RETELLING_TACTICS:
+        state.retelling_from_turn = state.turn
+        state.retelling_until_turn = state.turn + RETELLING_TURNS
+        state.retellings_asked += 1
+
+
+def _first_telling(state: InterviewState, before_turn: int) -> List[Claim]:
+    """The account as it stood before they were asked to give it again."""
+    return [c for c in normalise(state.claims)
+            if c.turn_seq <= before_turn and not c.restates]
+
+
+def _covered_minutes(claims: List[Claim]) -> int:
+    """Minutes of the evening these claims account for, overlaps merged once."""
+    spans = sorted((c.start_min, c.end_min) for c in claims if c.has_window)
+    merged: List[List[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return sum(e - s for s, e in merged)
+
+
+def _match_original(state: InterviewState, claim: Claim,
+                    before_turn: int) -> Optional[Claim]:
+    """Which part of the first telling is this re-stating?
+
+    Matched on time, because an evening is a timeline and a second telling
+    revisits stretches of it. The best overlap wins; no overlap at all means
+    they have wandered onto ground they never covered, which is new information
+    rather than a re-statement.
+    """
+    if not claim.has_window:
+        return None
+    best, best_overlap = None, 0
+    for prior in _first_telling(state, before_turn):
+        overlap = min(prior.end_min, claim.end_min) - max(prior.start_min, claim.start_min)
+        if overlap > best_overlap:
+            best, best_overlap = prior, overlap
+    return best
+
+
+def _retelling_conflicts(state: InterviewState, claim: Claim, original: Claim,
+                         turn_seq: int) -> List[Contradiction]:
+    """Score the delta between telling one and telling two.
+
+    Vrij et al. (2008): reverse recall is hard for liars because they rehearsed
+    forwards, and hard for truth-tellers too - which is the point. The
+    difficulty is real either way, and what separates them is whether the
+    CONTENT holds. So only content that genuinely conflicts is scored here.
+
+    Three things are deliberately NOT scored, and each of them would otherwise
+    punish an honest learner:
+
+      * Saying LESS. Recall is lossy and this is their second language under
+        pressure; a thinner account is expected, not evasive.
+      * Saying MORE. Recalling further detail on a later attempt is well
+        established and is a marker of genuine memory, not invention.
+      * Different words for the same thing. `activity` is free text, so
+        "waiting" against "sitting about" would read as a lie about wording.
+
+    What is left is substitution: they said one thing, now they say another.
+    """
+    out: List[Contradiction] = []
+    prior_row = state.claim(original.id)
+    vouched = bool(prior_row and prior_row.vouched_by_chen)
+
+    def flag(detail: str) -> None:
+        out.append(Contradiction(
+            id=str(uuid.uuid4()), kind="retelling", turn_seq=turn_seq,
+            detail=detail, claim_id=claim.id, against_claim_id=original.id,
+            was_vouched=vouched,
+        ))
+
+    if claim.location and original.location and claim.location != original.location:
+        flag(f"telling it again, '{original.text}' has become '{claim.text}' - "
+             f"{original.location} the first time, {claim.location} now")
+
+    # Stated bounds only. An invented bound is the timeline being helpful, and
+    # accusing someone of moving a time the engine supplied itself is the
+    # failure this codebase keeps having to guard against.
+    if not claim.inferred and not original.inferred:
+        shift = abs(claim.start_min - original.start_min)
+        if shift >= _RETELLING_TIME_SHIFT and claim.location == original.location:
+            flag(f"'{original.text}' was put at {_fmt(original.start_min)} the first "
+                 f"time and {_fmt(claim.start_min)} now - {shift} minutes adrift")
+
+    # Only a straight swap counts: both tellings name somebody, and not one name
+    # survives. Dropping a name is forgetting; adding one is remembering.
+    first_names = {p.strip().lower() for p in original.people if p and p.strip()}
+    now_names = {p.strip().lower() for p in claim.people if p and p.strip()}
+    if first_names and now_names and not (first_names & now_names):
+        flag(f"'{original.text}' had {', '.join(sorted(first_names))} in it; "
+             f"now it is {', '.join(sorted(now_names))}")
+
+    return out
+
+
 def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis,
            brief: Optional[Brief], turn_seq: int) -> List[Contradiction]:
     """Fold a learner turn into state and return any NEW contradictions."""
@@ -153,14 +280,31 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     # comparing raw windows found nothing at all. See timeline.normalised.
     spans = {c.id: c for c in normalise(state.claims)}
 
+    # Is this the second telling? If so, what they say is measured against the
+    # first one instead of being filed as further information - which is the
+    # entire mechanic. Told forwards then backwards, an account that holds is
+    # the same account; one that does not is where the interview turns.
+    retelling = state.is_retelling(turn_seq)
+    baseline_turn = state.retelling_from_turn if retelling else turn_seq
+
     for cid in new_ids:
         claim = spans.get(cid)
         if claim is None:                      # no time information at all
             continue
         original = state.claim(cid)
 
+        matched = _match_original(state, claim, baseline_turn) if retelling else None
+        if matched is not None:
+            if original is not None:
+                original.restates = matched.id
+            found.extend(_retelling_conflicts(state, claim, matched, turn_seq))
+
         # Self-contradiction: does this replace something they already said?
-        for prior in normalise(state.claims):
+        # Skipped for a re-statement, which has just been measured against the
+        # first telling - running both would raise one difference twice. The
+        # evidence pass below still runs either way: a second telling can move
+        # them somewhere they had not walked into before, and that is news.
+        for prior in (normalise(state.claims) if matched is None else []):
             if prior.id == cid or prior.turn_seq >= claim.turn_seq:
                 continue
             if not (prior.location and claim.location) or prior.location == claim.location:
@@ -200,6 +344,21 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
                 claim_id=cid, evidence_id=ev.id,
             ))
 
+    # A second telling ends when they have given it, not when a timer runs out.
+    # Once every stretch of the first account has been gone over again there is
+    # nothing left to compare, and leaving the window open would let the
+    # follow-up - the heaviest tactic in the registry - hold the floor for the
+    # rest of the interview. RETELLING_TURNS stays as the backstop for a learner
+    # who wanders off and never finishes.
+    if retelling:
+        first = _first_telling(state, baseline_turn)
+        revisited = {c.restates for c in state.claims
+                     if c.restates and c.turn_seq > baseline_turn}
+        total = _covered_minutes(first)
+        if total and _covered_minutes([c for c in first if c.id in revisited]) \
+                >= _RETELLING_DONE * total:
+            state.retelling_until_turn = turn_seq
+
     state.contradictions.extend(found)
 
     if extraction.topic:
@@ -224,7 +383,16 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
 #
 # There is no "brief" entry any more. Departing from a dealt account was the old
 # test, and there is no dealt account to depart from.
-_PRESSURE_FOR = {"self": 0.10, "breach": 0.10, "evidence": 0.15}
+#
+# A retelling difference scores highest of the three the learner controls. It is
+# the sharpest thing an interviewer can get: not a slip noticed in passing, but
+# the account failing under a test it was deliberately put to.
+_PRESSURE_FOR = {"self": 0.10, "breach": 0.10, "retelling": 0.12, "evidence": 0.15}
+
+# Their own account moving, however it was caught. Kept as one set because the
+# ending should not care whether a difference surfaced on its own or under a
+# second telling - only that the story did not hold.
+_WOBBLE_KINDS = ("self", "retelling")
 
 # One bad turn should not end the interview. Several claims can clash with the
 # same story, and without a ceiling they compound into an instant conviction.
@@ -354,7 +522,7 @@ def decide_outcome(state: InterviewState) -> Optional[str]:
         return None
 
     caught = [c for c in state.contradictions if c.kind == "evidence" and c.raised]
-    wobbled = [c for c in state.contradictions if c.kind == "self"]
+    wobbled = [c for c in state.contradictions if c.kind in _WOBBLE_KINDS]
     breached = [c for c in state.contradictions if c.kind == "breach"]
 
     # They put themselves there. With anything to corroborate it, that is enough

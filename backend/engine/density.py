@@ -29,6 +29,9 @@ from engine.state import Claim
 # is to catch a topic with nothing in it, not to demand a novel.
 THIN = 0.45
 
+# A single topic this rich is an account in its own right - see testable().
+STRONG = 0.75
+
 # No topic label at all. Claims arrive untagged when the model does not name the
 # topic, and they should still count for something rather than vanish.
 UNTAGGED = "the evening"
@@ -96,8 +99,11 @@ class TopicDensity:
 def assess(claims: List[Claim]) -> Dict[str, TopicDensity]:
     """Measure every topic the learner has said anything about.
 
-    Superseded claims are excluded: a statement they have since replaced is not
-    detail their account still carries.
+    Two kinds of claim are excluded. A superseded one is a statement they have
+    since replaced, so it is not detail the account still carries. A re-statement
+    is ground already counted the first time round - letting a second telling
+    inflate density would mean an account got richer by being repeated, and the
+    probe stage would stand down exactly when the learner had added nothing.
     """
     out: Dict[str, TopicDensity] = {}
     seen_people: Dict[str, set] = {}
@@ -105,7 +111,7 @@ def assess(claims: List[Claim]) -> Dict[str, TopicDensity]:
     seen_activities: Dict[str, set] = {}
 
     for claim in claims:
-        if claim.superseded_by is not None:
+        if claim.superseded_by is not None or claim.restates is not None:
             continue
         topic = (claim.topic or UNTAGGED).strip().lower() or UNTAGGED
         d = out.setdefault(topic, TopicDensity(topic=topic))
@@ -149,11 +155,21 @@ def thinnest(claims: List[Claim]) -> Optional[TopicDensity]:
 def testable(claims: List[Claim], min_topics: int = 2) -> bool:
     """Is the account rich enough to be worth attacking?
 
-    Requires a few topics AND none of them thin. The second half is the point:
-    an account can cover the whole evening and still be a list of assertions
-    with nothing in it, and running that backwards proves nothing about anyone.
+    Wants a few topics AND none of them thin. The second half is the point: an
+    account can cover the whole evening and still be a list of assertions with
+    nothing in it, and running that backwards proves nothing about anyone.
+
+    The topic count alone cannot be a hard gate, though. Topics are free-text
+    labels supplied by the model, so a run where it reuses one label throughout
+    would report a single topic no matter how much the learner said - and every
+    technique behind this gate, reverse chronology included, would silently
+    never fire. That is the exact failure this whole layer was built to end:
+    a technique that could not trigger because nothing knew enough to trigger
+    it. So one topic still qualifies, provided it is substantial on its own.
     """
     measured = assess(claims)
-    if len(measured) < min_topics:
+    if not measured or any(d.thin for d in measured.values()):
         return False
-    return not any(d.thin for d in measured.values())
+    if len(measured) >= min_topics:
+        return True
+    return max(d.score for d in measured.values()) >= STRONG

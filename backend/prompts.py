@@ -130,6 +130,12 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
     else:
         parts.append("They have not given an account of the evening yet.")
 
+    if state.retelling_active:
+        parts.append(
+            "THEY ARE GIVING THE ACCOUNT A SECOND TIME. Let them do the work. Do not "
+            "quote their first version back at them, do not finish their sentences, "
+            "and do not say whether it matches - you are listening for whether it does.")
+
     open_c = state.open_contradictions
     if open_c:
         parts.append("NOTICED, NOT YET PUT TO THEM:\n" +

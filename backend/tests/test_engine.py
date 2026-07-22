@@ -460,9 +460,21 @@ dropped.superseded_by = "y"
 check("a claim they have since replaced is not detail their account carries",
       "the cafe" not in density.assess([dropped]))
 
-check("one rich topic is not yet a testable account",
-      not density.testable(full_rich[:2]))
+check("a single middling topic is not yet a testable account",
+      not density.testable(full_rich[:2]),
+      f"score={density.assess(full_rich[:2])['the cafe'].score}")
 check("two rich topics are", density.testable(full_rich))
+
+# Topics are free-text labels the MODEL supplies. If it reuses one all
+# interview, a hard topic-count gate would lock reverse chronology out of every
+# run - the precise failure this layer exists to end.
+one_big_topic = [probed(f"b{n}", 17 + n, 0, 18 + n, 0, "cafe", "the evening", seq=n)
+                 for n in range(5)]
+check("one substantial topic still counts, whatever the model labelled it",
+      density.testable(one_big_topic),
+      f"score={density.assess(one_big_topic)['the evening'].score}")
+check("but a thin single topic never does",
+      not density.testable(sparse))
 check("a bare account is never testable however much time it covers",
       not density.testable(full_blocks))
 
@@ -571,6 +583,194 @@ check("a retired brief id deals a pair rather than stranding the interview",
 check("and the same retired id always deals the same pair",
       briefs_mod.get("innocent_missed_calls").id
       == briefs_mod.get("innocent_missed_calls").id)
+
+
+print("\nRE-TELLING MODE  (the second telling is the test)")
+
+
+def first_telling():
+    """An account given once, ready to be asked for again."""
+    st = InterviewState(turn=8)
+    dr.ingest(st, dr.Extraction(claims=[
+        {"text": "I was at the cafe with Sam", "start_min": 18 * 60, "end_min": 20 * 60,
+         "location": "cafe", "activity": "eating", "people": ["Sam"]},
+        {"text": "then I walked home", "start_min": 20 * 60, "end_min": 21 * 60,
+         "location": "home", "activity": "walking", "people": []},
+    ], topic="the evening"), _an("x", responsive=True), None, 8)
+    return st
+
+
+def retell(st, claims, turn=None):
+    """Feed a second telling in, with the window already armed."""
+    st.turn = turn or (st.retelling_from_turn + 1)
+    return dr.ingest(st, dr.Extraction(claims=claims, topic="the evening"),
+                     _an("x", responsive=True), None, st.turn)
+
+
+st = first_telling()
+check("asking for it again is not itself a re-telling",
+      not st.is_retelling(8), "the answer does not arrive until the turn after")
+dr.arm_retelling(st, "reverse_chronology")
+check("reverse chronology arms the window", st.is_retelling(9))
+check("and the window lapses", not st.is_retelling(9 + dr.RETELLING_TURNS))
+
+st2 = first_telling()
+dr.arm_retelling(st2, "funnel_probe")
+check("an ordinary probe does NOT arm it", not st2.is_retelling(9))
+
+# The mechanic itself: same ground, different answer.
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the bridge then", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "bridge", "activity": "eating"}])
+check("a place that moved between tellings is caught",
+      any(c.kind == "retelling" for c in found),
+      str([(c.kind, c.detail) for c in found]))
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the cafe with Alex", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "cafe", "people": ["Alex"]}])
+check("a name swapped for another is caught",
+      any(c.kind == "retelling" for c in found), str([c.detail for c in found]))
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "the cafe, about seven", "start_min": 19 * 60,
+                     "end_min": 21 * 60, "location": "cafe"}])
+check("an episode that slid an hour is caught",
+      any(c.kind == "retelling" for c in found), str([c.detail for c in found]))
+
+# ── the guards. Each of these would punish an honest learner. ────────────────
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the cafe with Sam", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "cafe", "activity": "eating",
+                     "people": ["Sam"]}])
+check("an account that holds costs nothing", not found, str([c.detail for c in found]))
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "the cafe", "start_min": 18 * 60, "end_min": 20 * 60,
+                     "location": "cafe"}])
+check("saying LESS the second time is not a contradiction", not found,
+      "recall is lossy and this is their second language - a thinner account is expected")
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "the cafe, with Sam and Jo, it was raining",
+                     "start_min": 18 * 60, "end_min": 20 * 60, "location": "cafe",
+                     "people": ["Sam", "Jo"]}])
+check("remembering MORE the second time is not a contradiction", not found,
+      "recalling further detail on a later attempt is a marker of genuine memory")
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "the cafe, sitting about", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "cafe", "activity": "sitting about",
+                     "people": ["Sam"]}])
+check("different words for the same thing are not a contradiction", not found,
+      "activity is free text; scoring it would call a synonym a lie")
+
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "the cafe, ten past six", "start_min": 18 * 60 + 10,
+                     "end_min": 20 * 60, "location": "cafe"}])
+check("rounding a time slightly is not a contradiction", not found,
+      f"a shift under {dr._RETELLING_TIME_SHIFT} minutes is ordinary imprecision")
+
+# Ground they never covered the first time is news, not a discrepancy.
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "before that I was at the station", "start_min": 17 * 60,
+                     "end_min": 17 * 60 + 45, "location": "station"}])
+check("new ground in the second telling is filed, not scored",
+      not any(c.kind == "retelling" for c in found), str([c.detail for c in found]))
+
+# One difference, raised once.
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the bridge then", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "bridge"}])
+kinds = [c.kind for c in found]
+check("a re-telling difference is not ALSO raised as a self-contradiction",
+      kinds.count("retelling") == 1 and "self" not in kinds, str(kinds))
+
+# Repeating yourself must not make the account look richer.
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+before = density.assess(st.claims)["the evening"].score
+retell(st, [{"text": "I was at the cafe with Sam", "start_min": 18 * 60,
+             "end_min": 20 * 60, "location": "cafe", "activity": "eating",
+             "people": ["Sam"]}])
+check("a repeat does not inflate detail density",
+      density.assess(st.claims)["the evening"].score == before,
+      "an account cannot get richer by being said twice")
+
+# It is their story moving, so it lands where story movement lands.
+st = InterviewState()
+dr.update_pressure(st, [Contradiction(id="r", kind="retelling", turn_seq=1, detail="d")],
+                   _an("I was at the bridge.", responsive=True), rep)
+check("a re-telling difference raises pressure", st.pressure > 0)
+
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.8)
+st.contradictions += [
+    Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
+    Contradiction(id="r1", kind="retelling", turn_seq=2, detail="d"),
+    Contradiction(id="r2", kind="retelling", turn_seq=3, detail="d"),
+]
+check("an account that fell apart under a second telling -> detained",
+      dr.decide_outcome(st) == Outcome.DETAINED.value)
+
+# Chen's trap has to survive the new route in.
+st = first_telling()
+st.claims[0].vouched_by_chen = True
+dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the bridge then", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "location": "bridge"}])
+check("breaking a claim Chen vouched for still springs the sting",
+      any(c.was_vouched for c in found if c.kind == "retelling"))
+
+# The window shuts when they have GIVEN the second telling, not when a timer
+# expires. Without this the follow-up - the heaviest tactic in the registry -
+# holds the floor for the rest of the interview.
+st = first_telling(); dr.arm_retelling(st, "reverse_chronology")
+opened_until = st.retelling_until_turn
+retell(st, [{"text": "the cafe again", "start_min": 18 * 60, "end_min": 20 * 60,
+             "location": "cafe", "people": ["Sam"]}])
+check("part-way through, the window stays open",
+      st.retelling_until_turn == opened_until, f"until={st.retelling_until_turn}")
+retell(st, [{"text": "and home after", "start_min": 20 * 60, "end_min": 21 * 60,
+             "location": "home"}], turn=st.retelling_from_turn + 2)
+check("once the ground is re-covered, the window shuts early",
+      st.retelling_until_turn < opened_until,
+      f"until={st.retelling_until_turn}, opened_until={opened_until}")
+
+# Measured in ground covered, not claims re-stated. An account built over many
+# turns must not need one re-statement per turn to count as given again.
+st = InterviewState(turn=6)
+for n in range(6):                                   # six claims, one span
+    dr.ingest(st, dr.Extraction(claims=[{"text": f"cafe {n}", "start_min": 18 * 60,
+              "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}],
+              topic="the cafe"), _an("x", responsive=True), None, 6)
+dr.arm_retelling(st, "reverse_chronology")
+opened_until = st.retelling_until_turn
+retell(st, [{"text": "the cafe, six till eight", "start_min": 18 * 60,
+             "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}])
+check("one re-statement can close a span built over six turns",
+      st.retelling_until_turn < opened_until,
+      "counting claims rather than ground would set a bar nobody could clear")
+
+# Tactic gating around the mode.
+c, st = ctx_with(Stage.PROBE, full_rich)
+st.turn = 5
+st.retelling_from_turn, st.retelling_until_turn = 4, 10
+c = dr.build_context(st, None)
+ids = {t.id for t in tac.available(c, "Reynolds")}
+check("mid-re-telling, the follow-up is offered", "retelling_followup" in ids, str(sorted(ids)))
+check("and it will not ask for a SECOND second telling",
+      "reverse_chronology" not in ids and "retell_from_point" not in ids, str(sorted(ids)))
+
+# Backwards, then outward from a point, and that is the repertoire. Each costs
+# several turns of an interview capped at forty.
+c, st = ctx_with(Stage.CHALLENGE, full_rich)
+st.turn = 20
+st.retellings_asked = 2
+c = dr.build_context(st, None)
+ids = {t.id for t in tac.available(c, "Reynolds")}
+check("having asked twice, they stop asking",
+      "reverse_chronology" not in ids and "retell_from_point" not in ids,
+      "a third request is badgering, not technique")
 
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

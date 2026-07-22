@@ -84,6 +84,15 @@ def _account_thin(c: Context) -> bool:
     return bool(c.thin)
 
 
+def _mid_retelling(c: Context) -> bool:
+    return c.state.retelling_active
+
+
+def _may_ask_retelling(c: Context) -> bool:
+    """May a detective ask for the account again? See InterviewState."""
+    return c.state.may_ask_retelling
+
+
 def _has_open_contradiction(c: Context) -> bool:
     return bool(c.state.open_contradictions)
 
@@ -192,7 +201,26 @@ _ALL: List[Tactic] = [
            "Ask them to tell the evening again BACKWARDS - from the end of the night to "
            "the start. Say plainly that you want it in reverse order. Then let them work. "
            "Rehearsed accounts are built forwards and come apart when run backwards.",
-           precondition=_account_testable, cooldown=12, weight=2.5),
+           precondition=lambda c: _account_testable(c) and _may_ask_retelling(c),
+           cooldown=12, weight=2.5),
+
+    # The other way of asking for it twice. Reverse order is the harder version;
+    # this one is less obviously a test, which is its advantage.
+    Tactic("retell_from_point", EITHER, [Stage.PROBE, Stage.CHALLENGE],
+           "Pick one fixed moment they have already described and ask them to work "
+           "OUTWARD from it - what came immediately before, what came immediately after. "
+           "Do not signal that you are checking anything.",
+           precondition=lambda c: _account_testable(c) and _may_ask_retelling(c),
+           cooldown=10, weight=2.3),
+
+    # Once they are re-telling, keep them at it. Without this the director picks
+    # a fresh tactic on the next turn and the second telling gets exactly one
+    # turn - not enough of it to compare against anything.
+    Tactic("retelling_followup", EITHER, [Stage.PROBE, Stage.CHALLENGE],
+           "They are part-way through giving the account again. Keep them going: ask for "
+           "the next step, in the order you asked for. Do NOT remind them what they said "
+           "the first time, do not fill anything in for them, and do not help.",
+           precondition=_mid_retelling, weight=3.4),
 
     # CHALLENGE — only after both agendas are exhausted.
     Tactic("challenge_contradiction", EITHER, [Stage.CHALLENGE],

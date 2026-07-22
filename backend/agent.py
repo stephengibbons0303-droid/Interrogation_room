@@ -329,6 +329,11 @@ class InterrogationAgent:
         )
         new_contradictions = dr.ingest(self.state, extraction, final,
                                        self.brief, self.state.turn)
+
+        # Armed AFTER ingest on purpose. The claims folded in above came from
+        # their answer to the previous question; the second telling does not
+        # begin until they respond to the request being made this turn.
+        dr.arm_retelling(self.state, result.tactic_used)
         dr.update_pressure(self.state, new_contradictions, final, ctx.timeline)
         stung = dr.update_chen(self.state, new_contradictions, prelim.struggling)
 
