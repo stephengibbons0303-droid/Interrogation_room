@@ -173,6 +173,27 @@ def assess(claims: List[Claim]) -> Dict[str, TopicDensity]:
     return out
 
 
+def timepoints(claims: List[Claim]) -> int:
+    """How many distinct clock times the learner has actually committed to.
+
+    Stated bounds only, de-duplicated: "about half six" said four times is one
+    anchor, not four. This is the signal behind pressing for more EVENTS - an
+    account with three anchors is easy to hold because everything else can be
+    free narrative around them. The cognitive-load techniques need a sequence
+    long enough to be hard to re-order: calls made, rounds bought, who arrived
+    when, paying, leaving. Each anchor extracted is another thing the second
+    telling has to keep in place.
+    """
+    seen = set()
+    for c in claims:
+        if c.superseded_by is not None or c.restates is not None:
+            continue
+        for bound in (c.start_min, c.end_min):
+            if bound is not None:
+                seen.add(bound)
+    return len(seen)
+
+
 def thin_topics(claims: List[Claim]) -> List[TopicDensity]:
     """Every topic not yet worth testing, thinnest first."""
     return sorted([d for d in assess(claims).values() if d.thin],

@@ -139,7 +139,11 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
     open_c = state.open_contradictions
     if open_c:
         parts.append("NOTICED, NOT YET PUT TO THEM:\n" +
-                     "\n".join(f"  - {c.detail}" for c in open_c[:3]))
+                     "\n".join(f"  - {c.detail}" for c in open_c[:3]) + "\n"
+                     "  Raise at most ONE, as a genuine question about which version is "
+                     "right - never as a gotcha built on a paraphrase. If their most "
+                     "recent answer already explains the difference, it is resolved: "
+                     "let it go and do not raise it again.")
     if state.topics_covered:
         parts.append("Topics already covered: " + ", ".join(state.topics_covered))
 
@@ -243,6 +247,9 @@ CHOOSE ONE OF THESE TACTICS AND REPORT WHICH YOU USED:
 
 Also extract, from the subject's LAST message only:
   - any factual claims about where they were, when, and with whom
+  - EACH small event as its own claim with its own time where one was stated:
+    a call made, a round bought, someone arriving, paying, leaving. A narrated
+    sequence is several claims, not one - the anchors are the point.
   - times as minutes past midnight (9:30pm = 1290); `location` must be one of
     cafe, bridge, home, station, or null if somewhere else
   - `place`: where they said they were IN THEIR OWN WORDS, for every claim that

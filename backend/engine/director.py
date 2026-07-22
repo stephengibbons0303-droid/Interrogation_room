@@ -56,6 +56,29 @@ _RETELLING_TIME_SHIFT = 30
 # arriving twice, and an account told faithfully gets its teller detained.
 _SAME_EPISODE_OVERLAP = 15
 
+# "I left about eight" is the END of a stay, and the extractor reliably encodes
+# it as a START - the time is when the leaving happened, after all. Left there,
+# every departure gets compared against the arrival of the same stay, and the
+# engine reads "arrived at 6.30" then "left about 7.45" as a 75-minute lie about
+# arriving. Three of the four contradictions in one playtest were exactly this.
+import re as _re
+
+_LEAVING_RX = _re.compile(
+    r"\b(left|leave|leaving|departed|finished|walked out|headed (?:off|home)|"
+    r"said goodbye|set off|got out)\b", _re.I)
+
+# "I got there about 6 and left about 7.30" states an arrival AND a departure -
+# a true span, correctly encoded, which the reclassification below must not
+# touch. Only a sentence that leaves WITHOUT arriving has a misleading start.
+_ARRIVING_RX = _re.compile(
+    r"\b(arriv\w*|got there|got to|got in|went in|went into|reached|turned up|"
+    r"showed up|from (?:about|around)?\s*\d|since)\b", _re.I)
+
+
+def _is_pure_departure(text: str) -> bool:
+    t = text or ""
+    return bool(_LEAVING_RX.search(t)) and not _ARRIVING_RX.search(t)
+
 # How much of the first telling has to be gone over again before the second one
 # counts as given. Measured in ground covered rather than claims re-stated: an
 # account of four stretches of the evening might have been built over ten turns,
@@ -176,6 +199,40 @@ def place_key(claim: Claim) -> Optional[str]:
     return place or None
 
 
+# Words that describe rather than identify a place. Left out of the comparison
+# so "the cafe" and "a cafe somewhere on the High Street" read as one place.
+_PLACE_NOISE = {"the", "a", "an", "in", "at", "on", "near", "by", "to", "of",
+                "and", "&", "some", "somewhere", "up", "down", "towards",
+                "nearby", "little", "bit"}
+
+
+def _place_tokens(key: str) -> set:
+    out = set()
+    for word in key.replace("&", " and ").replace(",", " ").split():
+        w = "".join(ch for ch in word.lower() if ch.isalnum())
+        if w and w not in _PLACE_NOISE:
+            out.add(w)
+    return out
+
+
+def same_place(a: Optional[str], b: Optional[str]) -> bool:
+    """Do these two descriptions plausibly name the same place?
+
+    Token overlap, not string equality. One playtest minted nine contradictions
+    in a single turn because "Pig & Whistle", "the pub" and "the Pig and
+    Whistle pub in Angel Islington" all compared as different places - the
+    learner's own re-mentions of one pub read as being in three places at once.
+    Erring toward "same" is deliberate: a missed real contradiction costs a
+    beat; a manufactured one accuses an honest learner of lying.
+    """
+    if not a or not b:
+        return False
+    ta, tb = _place_tokens(a), _place_tokens(b)
+    if not ta or not tb:
+        return False
+    return bool(ta & tb)
+
+
 def _covered_minutes(claims: List[Claim]) -> int:
     """Minutes of the evening these claims account for, overlaps merged once."""
     spans = sorted((c.start_min, c.end_min) for c in claims if c.has_window)
@@ -253,9 +310,12 @@ def _retelling_conflicts(state: InterviewState, claim: Claim, original: Claim,
                  f"time and {_fmt(claim.start_min)} now - {shift} minutes adrift")
 
     # Only a straight swap counts: both tellings name somebody, and not one name
-    # survives. Dropping a name is forgetting; adding one is remembering.
-    first_names = {p.strip().lower() for p in original.people if p and p.strip()}
-    now_names = {p.strip().lower() for p in claim.people if p and p.strip()}
+    # survives. Dropping a name is forgetting; adding one is remembering. And
+    # only actual NAMES play - "work colleagues" one telling and "friends" the
+    # next is loose vocabulary, not a different set of people, and it was
+    # flagged as a lie until this filter existed.
+    first_names = {p.strip().lower() for p in original.people if density.is_named(p)}
+    now_names = {p.strip().lower() for p in claim.people if density.is_named(p)}
     if first_names and now_names and not (first_names & now_names):
         flag(f"'{original.text}' had {', '.join(sorted(first_names))} in it; "
              f"now it is {', '.join(sorted(now_names))}")
@@ -274,12 +334,22 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
 
     new_ids = []
     for raw in extraction.claims:
+        start_min, end_min = raw.get("start_min"), raw.get("end_min")
+        # A departure statement contributes its departure time as the stay's
+        # END, and nothing else. Encoded as a start, "I left about 7:45" gets
+        # compared against the arrival of the same stay and the gap read as a
+        # lie about turning up. And when the sentence carries a second time -
+        # "left at 7:45 because I was meeting them at eight" - the pair is not
+        # a span of presence anywhere, so keeping it minted phantom overlaps
+        # with wherever they really were during those minutes.
+        if start_min is not None and _is_pure_departure(raw.get("text", "")):
+            start_min, end_min = None, start_min
         claim = Claim(
             id=str(uuid.uuid4()),
             turn_seq=turn_seq,
             text=raw.get("text", "")[:500],
-            start_min=raw.get("start_min"),
-            end_min=raw.get("end_min"),
+            start_min=start_min,
+            end_min=end_min,
             location=raw.get("location"),
             place=raw.get("place"),
             activity=raw.get("activity"),
@@ -316,6 +386,12 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     retelling = state.is_retelling(turn_seq)
     baseline_turn = state.retelling_from_turn if retelling else turn_seq
 
+    # At most ONE self-contradiction per turn. A single vague re-mention once
+    # collided with nine prior claims in one pass, and the interview spent four
+    # turns hammering the same half-hour. One answer can only move the story
+    # once; everything past the first finding is the same movement re-counted.
+    minted_self = False
+
     for cid in new_ids:
         claim = spans.get(cid)
         if claim is None:                      # no time information at all
@@ -333,7 +409,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
         # first telling - running both would raise one difference twice. The
         # evidence pass below still runs either way: a second telling can move
         # them somewhere they had not walked into before, and that is news.
-        for prior in (normalise(state.claims) if matched is None else []):
+        for prior in (normalise(state.claims) if matched is None and not minted_self else []):
             if prior.id == cid or prior.turn_seq >= claim.turn_seq:
                 continue
             prior_row = state.claim(prior.id)
@@ -341,16 +417,28 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
                 continue
             here, there = place_key(claim), place_key(prior)
 
-            # Two places at once.
-            if here and there and here != there \
-                    and prior.start_min < claim.end_min and claim.start_min < prior.end_min:
-                prior_row.superseded_by = cid
-                found.append(Contradiction(
-                    id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
-                    detail=f"earlier: '{prior.text}' - now: '{claim.text}'",
-                    claim_id=cid, against_claim_id=prior.id,
-                    was_vouched=prior_row.vouched_by_chen,
-                ))
+            # Two places at once. STATED spans only, on the engine's founding
+            # rule: never convict on inferred data. "We went to the pub" with no
+            # end used to be normalised into a span covering the whole evening,
+            # which then "overlapped" every other place they mentioned -
+            # consecutive narration read as omnipresence. And the overlap has to
+            # be substantial: narrating one journey in touching segments is
+            # segmentation, not two places at once.
+            if here and there and not same_place(here, there):
+                if claim.inferred or prior.inferred:
+                    continue
+                overlap = min(prior.end_min, claim.end_min) \
+                    - max(prior.start_min, claim.start_min)
+                if overlap >= _SAME_EPISODE_OVERLAP:
+                    minted_self = True
+                    prior_row.superseded_by = cid
+                    found.append(Contradiction(
+                        id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
+                        detail=f"earlier: '{prior.text}' - now: '{claim.text}'",
+                        claim_id=cid, against_claim_id=prior.id,
+                        was_vouched=prior_row.vouched_by_chen,
+                    ))
+                    break
                 continue
 
             # The SAME place, at a different time - and this is the commonest way
@@ -360,24 +448,40 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             # Stated bounds only, never one the timeline filled in, and it has to
             # clear ordinary rounding: refining "about eight" to "ten past" is a
             # learner being careful, not an account changing.
-            if not (here and there and here == there):
-                continue
-            # Same episode, or merely the next part of one? Only overlapping
-            # spans are two accounts of the same stretch of the evening.
-            if min(prior.end_min, claim.end_min) \
-                    - max(prior.start_min, claim.start_min) < _SAME_EPISODE_OVERLAP:
+            if not same_place(here, there):
                 continue
             raw_now, raw_before = state.claim(cid), prior_row
             if raw_now is None:
                 continue
+            # Same episode, or merely the next part of one? Overlapping spans
+            # are two accounts of the same stretch; consecutive segments are
+            # one visit narrated in pieces. EXCEPT when both claims state only
+            # the same single bound - two leaving times, or two arrival times,
+            # for one place are the same fact twice by construction, and their
+            # invented spans sit end to end precisely because the times differ.
+            same_field_pair = (
+                (raw_now.start_min is None and raw_before.start_min is None)
+                or (raw_now.end_min is None and raw_before.end_min is None))
+            if not same_field_pair and min(prior.end_min, claim.end_min) \
+                    - max(prior.start_min, claim.start_min) < _SAME_EPISODE_OVERLAP:
+                continue
             moved, which = 0, ""
             for field, label in (("start_min", "arriving"), ("end_min", "leaving")):
+                # An "arriving" comparison is only honest between two claims
+                # that are actually about arriving. "I left about 7:45, I was
+                # meeting them at eight" carries both bounds, and its start is
+                # the departure - set against a real arrival it manufactures a
+                # 75-minute lie about turning up.
+                if field == "start_min" and (
+                        _is_pure_departure(raw_now.text) or _is_pure_departure(raw_before.text)):
+                    continue
                 a, b = getattr(raw_now, field), getattr(raw_before, field)
                 if a is None or b is None:
                     continue                      # supplying a missing bound is not a change
                 if abs(a - b) > moved:
                     moved, which = abs(a - b), label
             if moved >= _RETELLING_TIME_SHIFT:
+                minted_self = True
                 prior_row.superseded_by = cid
                 found.append(Contradiction(
                     id=str(uuid.uuid4()), kind="self", turn_seq=turn_seq,
@@ -386,6 +490,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
                     claim_id=cid, against_claim_id=prior.id,
                     was_vouched=prior_row.vouched_by_chen,
                 ))
+                break
 
         # There is deliberately no check here for the account departing from what
         # "really" happened. Under the dealt-account design that was the central

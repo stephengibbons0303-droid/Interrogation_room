@@ -681,6 +681,105 @@ check("going back to the same place later is not a contradiction either",
       not found, "two separate visits do not overlap, so they are not one episode")
 
 
+print("\nPLACE MATCHING  (re-mentions of one place are one place)")
+
+check("'Pig & Whistle' matches 'the Pig and Whistle pub in Angel Islington'",
+      dr.same_place("pig & whistle", "the pig and whistle pub in angel islington"))
+check("'the cafe' matches 'a cafe somewhere on the High Street'",
+      dr.same_place("the cafe", "a cafe somewhere on the high street"))
+check("case location 'cafe' matches 'the Blue Door Cafe'",
+      dr.same_place("cafe", "the blue door cafe"))
+check("'the tube station in Highbury' matches 'near the tube station'",
+      dr.same_place("the tube station in highbury", "near the tube station"))
+check("the pub does not match the cafe",
+      not dr.same_place("the pig and whistle", "the blue door cafe"))
+check("noise words alone never match",
+      not dr.same_place("the", "somewhere near"))
+
+
+print("\nSELF-CONTRADICTION HYGIENE  (from a real transcript)")
+
+# The t17 disaster: one vague re-mention of the pub - start bound only - minted
+# NINE contradictions, colliding with everything from finishing work to leaving
+# the restaurant at ten, because its missing end was normalised across the whole
+# evening and 'Pig & Whistle' compared unequal to its own earlier mentions.
+st = InterviewState()
+said(st, 3, "finished work about five", 17 * 60, 17 * 60, None, "work")
+said(st, 3, "drink with colleagues at the Pig and Whistle", 17 * 60, 18 * 60 + 30,
+     None, "the Pig and Whistle pub in Angel Islington")
+said(st, 4, "I arrived at the cafe at 6.45", 18 * 60 + 45, None, "cafe", "the cafe")
+said(st, 4, "left the cafe about quarter to eight", None, 19 * 60 + 45, "cafe", "the cafe")
+said(st, 5, "dinner just after eight", 20 * 60 + 5, None, None, "an Indian restaurant")
+said(st, 5, "left there about 10", 22 * 60, None, None, "the restaurant")
+found = said(st, 6, "we went to the pub, Pig & Whistle", 17 * 60, None,
+             None, "Pig & Whistle")
+check("a vague re-mention of the pub mints NOTHING",
+      not [c for c in found if c.kind == "self"],
+      str([c.detail[:70] for c in found]))
+
+# One answer moves the story once. Even a turn that genuinely conflicts with
+# several prior claims is one movement, not a pile-on.
+st = InterviewState()
+said(st, 3, "at the cafe seven till eight", 19 * 60, 20 * 60, "cafe", "the cafe")
+said(st, 3, "still at the cafe until nine", 20 * 60, 21 * 60, "cafe", "the cafe")
+found = said(st, 4, "I was at the pub all evening", 19 * 60, 22 * 60, None, "the pub")
+check("even a turn that breaks several claims mints at most ONE",
+      len([c for c in found if c.kind == "self"]) == 1,
+      str([c.detail[:60] for c in found]))
+
+# Sequential narration with single bounds - the shape nearly every real answer
+# has - is not omnipresence.
+st = InterviewState()
+said(st, 3, "I was at the cafe until eight", None, 20 * 60, "cafe", "the cafe")
+found = said(st, 4, "then dinner in Highbury from about half eight",
+             20 * 60 + 30, None, None, "a restaurant in Highbury")
+check("sequential one-bounded claims do not collide",
+      not [c for c in found if c.kind == "self"],
+      "the missing bounds are the timeline's invention, not their statement")
+
+# Fully stated, genuinely impossible - still caught.
+st = InterviewState()
+said(st, 3, "at the cafe from seven to eight", 19 * 60, 20 * 60, "cafe", "the cafe")
+found = said(st, 4, "at the pub from seven to eight", 19 * 60, 20 * 60, None, "the pub")
+check("a genuine two-places claim, fully stated, is still caught",
+      any(c.kind == "self" for c in found))
+
+# A departure time is when a stay ENDED. Compared as a start, "arrived at 6.30"
+# then "left about 7.45" reads as a 75-minute lie about arriving - which is how
+# the interview got hung up on one vague half-hour for four turns.
+st = InterviewState()
+said(st, 3, "I arrived at the cafe at 6.30", 18 * 60 + 30, None, "cafe", "the cafe")
+found = said(st, 4, "I left the cafe about quarter to eight", 19 * 60 + 45, None,
+             "cafe", "the cafe")
+check("arriving and then leaving the same place is a stay, not a contradiction",
+      not [c for c in found if c.kind == "self"],
+      str([c.detail[:70] for c in found]))
+check("and the departure landed as the stay's end",
+      st.claims[-1].end_min == 19 * 60 + 45 and st.claims[-1].start_min is None)
+
+st = InterviewState()
+said(st, 3, "I left the cafe about eight", 20 * 60, None, "cafe", "the cafe")
+found = said(st, 4, "I left the cafe about seven", 19 * 60, None, "cafe", "the cafe")
+check("two different LEAVING times for one place still collide",
+      any(c.kind == "self" and "leaving" in c.detail for c in found),
+      str([c.detail[:70] for c in found]))
+
+# "Left at 7:45 because I was meeting them at eight" is not fifteen minutes of
+# being at the cafe - a departure sentence asserts no span of presence at all,
+# and treating its two times as one manufactured overlaps with wherever they
+# actually were during those minutes.
+st = InterviewState()
+said(st, 3, "I walked up the High Street window shopping", 19 * 60 + 45, 20 * 60,
+     None, "the High Street")
+found = said(st, 4, "I left the cafe about 7.45 because I was meeting friends at eight",
+             19 * 60 + 45, 20 * 60, "cafe", "the cafe")
+check("a departure with a second time in it does not become a span of presence",
+      not [c for c in found if c.kind == "self"],
+      str([c.detail[:70] for c in found]))
+check("its departure time still lands as the stay's end",
+      st.claims[-1].end_min == 19 * 60 + 45 and st.claims[-1].start_min is None)
+
+
 print("\nRE-TELLING MODE  (the second telling is the test)")
 
 
@@ -858,6 +957,59 @@ for n in range(1, dr._RETELLING_MIN_TURNS + 1):
 check("re-covering the ground closes a span built over six turns",
       st.retelling_until_turn < opened_until,
       "counting claims rather than ground would set a bar nobody could clear")
+
+# Loose vocabulary for the same people is not a swap of people.
+st = InterviewState(turn=8)
+dr.ingest(st, dr.Extraction(claims=[
+    {"text": "drinks with work colleagues", "start_min": 17 * 60, "end_min": 18 * 60,
+     "location": None, "place": "the pub", "people": ["work colleagues"]}],
+    topic="the pub"), _an("x", responsive=True), None, 8)
+dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was with friends at the pub", "start_min": 17 * 60,
+                     "end_min": 18 * 60, "place": "the pub", "people": ["friends"]}])
+check("'colleagues' one telling and 'friends' the next is not a lie",
+      not [c for c in found if c.kind == "retelling"],
+      "neither names anybody; loose vocabulary is not a different set of people")
+
+
+print("\nSEQUENCE PRESSURE  (more anchors than a story can be narrated around)")
+
+sparse_claims = [Claim(id=f"s{i}", turn_seq=i, text=f"block {i}",
+                       start_min=(17 + i) * 60, end_min=(18 + i) * 60,
+                       location="cafe", topic="the evening") for i in range(3)]
+check("three blocks yield few timepoints", density.timepoints(sparse_claims) == 4)
+
+c, st = ctx_with(Stage.PROBE, sparse_claims)
+ids = {t.id for t in tac.available(c, "Reynolds")}
+check("a sparse timeline offers sequence extraction", "elicit_sequence" in ids,
+      str(sorted(ids)))
+check("and the forced choice is on the table", "forced_choice" in ids)
+
+dense_claims = sparse_claims + [
+    Claim(id=f"d{i}", turn_seq=5, text=f"event {i}", start_min=17 * 60 + i * 17,
+          location="cafe", topic="the evening") for i in range(4)]
+c, st = ctx_with(Stage.PROBE, dense_claims)
+check("enough anchors and it stands down",
+      "elicit_sequence" not in {t.id for t in tac.available(c, "Reynolds")},
+      f"timepoints={density.timepoints(dense_claims)}")
+
+check("saying 'about half six' four times is ONE anchor, not four",
+      density.timepoints([Claim(id=f"r{i}", turn_seq=i, text="half six",
+                                start_min=18 * 60 + 30) for i in range(4)]) == 1)
+
+# The depth-follower must actually be able to win a slot once nothing is thin.
+c, st = ctx_with(Stage.PROBE, full_rich)
+offered = [t.id for t in tac.available(c, "Chen")]
+check("volunteered detail gets followed one layer deeper",
+      "detail_expansion" in offered[:3], str(offered[:5]))
+
+# A challenge needs air around it.
+c, st = ctx_with(Stage.CHALLENGE, full_rich)
+st.contradictions.append(Contradiction(id="x", kind="self", turn_seq=1, detail="d"))
+c = dr.build_context(st, None)
+check("challenge_contradiction now carries a cooldown",
+      tac.get("challenge_contradiction").cooldown >= 2)
+
 
 # Tactic gating around the mode.
 c, st = ctx_with(Stage.PROBE, full_rich)

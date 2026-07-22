@@ -84,6 +84,15 @@ def _account_thin(c: Context) -> bool:
     return bool(c.thin)
 
 
+def _sequence_sparse(c: Context) -> bool:
+    """The account has too few clock anchors to be hard to hold.
+
+    Three timepoints is a story anyone can narrate around; the load techniques
+    need a sequence long enough that re-ordering it costs real effort.
+    """
+    return density.timepoints(c.state.claims) < 6
+
+
 def _mid_retelling(c: Context) -> bool:
     return c.state.retelling_active
 
@@ -169,10 +178,39 @@ _ALL: List[Tactic] = [
            "Pin them to something specific and repeat it back so it is on the record: an "
            "exact time, a route, who was present. Make the commitment explicit.",
            cooldown=3, weight=1.5),
+    # The depth-follower. When they volunteer something - "I sat by the window
+    # to watch people" - the next question comes FROM it, one layer further in.
+    # It existed before at weight 1.0 and never won a shortlist slot, so
+    # volunteered detail was accepted and left alone: the learner sets the depth
+    # of their own interrogation, which is exactly backwards.
     Tactic("detail_expansion", "Chen", [Stage.PROBE],
-           "Pick one small detail they mentioned and open it out - what were they watching, "
-           "who served them, what was the weather doing.",
-           cooldown=4),
+           "Take the detail they gave in their LAST answer and go one layer further into "
+           "it - if they sat by the window, what was outside it; if a girl served them, "
+           "what did she say; if they read their book, what were they drinking with it. "
+           "Chain from their words, not from a list of your own.",
+           cooldown=3, weight=2.4),
+
+    # Closing blanks by OFFERING. Recognition is easier than production, so a
+    # forced choice lets a learner short of words still commit to something -
+    # and either answer goes on the record for the second telling to keep in
+    # place. Suggested from a playtest: "they can close out parts of the story
+    # by offering possibilities, which I either go with or say no to".
+    Tactic("forced_choice", EITHER, [Stage.PROBE],
+           "Offer one concrete either/or about a blank in their account: busy or quiet, "
+           "card or cash, crowded or empty, raining or dry. Make both options specific, "
+           "then accept whichever they pick as part of their account.",
+           cooldown=5, weight=2.1),
+
+    # Sequence extraction: the anchors the load techniques need. An account
+    # with three clock points is easy to hold - everything else is free
+    # narrative around them. Small events, each pinned to a time, make the
+    # timeline long enough that re-ordering it under pressure costs something.
+    Tactic("elicit_sequence", EITHER, [Stage.PROBE],
+           "Take one stretch of their evening and get the small events inside it, in "
+           "order: calls made or received, messages, rounds bought, who arrived and left "
+           "when, paying, what they were carrying or wearing. Pin at least two of them to "
+           "clock times. One stretch only - do not sweep the whole evening.",
+           precondition=_sequence_sparse, cooldown=4, weight=2.5),
 
     # Directed probing. funnel_probe picks a topic; this one is aimed at the
     # specific hole the engine has measured, which is what turns "press them a
@@ -230,10 +268,14 @@ _ALL: List[Tactic] = [
            precondition=_mid_retelling, weight=3.4),
 
     # CHALLENGE — only after both agendas are exhausted.
+    # Cooldown 2: without one, stacked contradictions meant BOTH detectives
+    # hammered the same half-hour turn after turn. A challenge needs air around
+    # it - and if the subject's answer resolved it, that is the end of it.
     Tactic("challenge_contradiction", EITHER, [Stage.CHALLENGE],
            "Put ONE inconsistency to them, neutrally, as an observation rather than an "
-           "accusation: you said X, now you say Y, help me understand. Then wait.",
-           precondition=_has_open_contradiction, weight=3.0),
+           "accusation: you said X, now you say Y, help me understand. Then wait. If "
+           "their last answer already reconciled the two, do NOT re-litigate it - move on.",
+           precondition=_has_open_contradiction, cooldown=2, weight=3.0),
     Tactic("sue_disclose", "Reynolds", [Stage.CHALLENGE],
            "Strategic Use of Evidence. Introduce the evidence you have been given at the "
            "framing level specified - no more precise than stated. Let it land against what "
