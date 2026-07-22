@@ -18,15 +18,23 @@ const SILENCE_MS = 2500;
 
 // Backstop against a stuck mic in a noisy room, where the detector may never see
 // silence. Timed from the moment SPEECH starts, not from the mic opening, so
-// thinking time before answering is never counted - the learner may take as long
-// as they like to begin. In effect: "you have been talking for 60 seconds
-// without a 2.5s pause", which normal speech does not reach.
+// thinking time before answering is never counted.
 //
-// Deliberately looser than SAIF's 25s. Theirs can afford to be tight because
-// their cap still submits the audio it captured; Silero gives no way to flush
-// speech in progress, so ours loses the utterance and must therefore only ever
-// fire when something is genuinely broken.
-const MAX_SPEECH_MS = 60000;
+// Two things about this cap, both learned the hard way:
+//
+//   * It SUBMITS what was captured (submitUserSpeechOnPause below) rather than
+//     discarding it. The first version binned the utterance, on the belief that
+//     Silero could not flush speech in progress - untrue since vad-web grew
+//     submitUserSpeechOnPause, and the cost of believing it was a learner's
+//     entire free-recall account, a minute of second-language production,
+//     silently thrown away at the exact moment the app had asked for it.
+//
+//   * Sixty seconds was too tight. Free recall is DESIGNED to elicit minutes of
+//     continuous narration, and an L2 speaker working hard does not reliably
+//     leave a 2.5s gap inside a minute. The cap exists for the mic that will
+//     never see silence, not for a learner in full flow - and now that firing
+//     submits rather than destroys, it can afford to be generous.
+const MAX_SPEECH_MS = 120000;
 
 export class SpeechManager {
     private vad: any = null;
@@ -35,6 +43,10 @@ export class SpeechManager {
     private currentAudio: HTMLAudioElement | null = null;
     private maxListenTimer: ReturnType<typeof setTimeout> | null = null;
     private speechStartedAt: number = 0;
+    // Set on destroy(). With submitUserSpeechOnPause, tearing down mid-speech
+    // would otherwise flush the segment through onSpeechEnd and SEND a message
+    // from a component that no longer exists.
+    private destroyed: boolean = false;
     isListening: boolean = false;
     isTranscribing: boolean = false;
 
@@ -99,6 +111,12 @@ export class SpeechManager {
             minSpeechMs: 250,
             redemptionMs: SILENCE_MS,
             preSpeechPadMs: 300,
+            // Anything that pauses the mic mid-speech - the runaway cap, the
+            // MIC button - submits the audio captured so far instead of
+            // discarding it. A learner who presses stop while talking means
+            // "I'm done, send it", and the cap firing must never again cost
+            // them what they said.
+            submitUserSpeechOnPause: true,
             // Assets served from public/ (copied by prebuild script).
             workletURL: '/vad.worklet.bundle.min.js',
             modelURL: '/silero_vad_legacy.onnx',
@@ -178,10 +196,13 @@ export class SpeechManager {
         this.clearSpeechCap();
         this.maxListenTimer = setTimeout(() => {
             if (!this.isListening) return;
-            console.warn('Mic ran past the safety cap while speech was still detected.');
+            console.warn('[mic] speech ran past the safety cap - submitting what was captured.');
+            // stopListening() -> vad.pause() -> submitUserSpeechOnPause fires
+            // onSpeechEnd with everything said so far, which transcribes and
+            // sends as normal. The message describes that, not a loss.
             this.stopListening();
             if (this.onError) {
-                this.onError('Microphone stopped. Press MIC to carry on.');
+                this.onError('That was a long stretch of talking — sending what you said so far.');
             }
         }, MAX_SPEECH_MS);
     }
@@ -204,6 +225,9 @@ export class SpeechManager {
     }
 
     private async handleSpeechEnd(audio: Float32Array) {
+        // The flush arriving from destroy()'s pause. The room is gone - do not
+        // transcribe, and above all do not send.
+        if (this.destroyed) return;
         // Pause VAD immediately to prevent double-triggering during transcription
         this.vad?.pause();
         this.isListening = false;
@@ -393,6 +417,7 @@ export class SpeechManager {
     }
 
     destroy() {
+        this.destroyed = true;
         this.stopListening();
         this.stopAudio();
         if (this.vad) {
