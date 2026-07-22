@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+// 8013 is this repo's registered backend port (CLAUDE.md / ~/.claude/PORTS.md).
+// 8000 belongs to SAIF; defaulting there sent a fresh clone's auth/interview
+// calls to the wrong app (or 502) since the real value lived only in .env.local.
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8013';
 
 /**
  * Generic pass-through to the FastAPI backend for JSON endpoints

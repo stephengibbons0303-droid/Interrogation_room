@@ -6,6 +6,7 @@ need to be consistent, gated and testable are made in Python.
 """
 import uuid
 from dataclasses import dataclass
+from datetime import time as _t
 from typing import Any, Dict, List, Optional, Tuple
 
 from scenario import case
@@ -233,6 +234,18 @@ def same_place(a: Optional[str], b: Optional[str]) -> bool:
     return bool(ta & tb)
 
 
+def _to_time(minutes: int) -> _t:
+    """Minutes-past-midnight to a time, clamped to the evening's last minute.
+
+    Hour and minute both derive from the same clamped value. The old inline
+    version clamped only the hour term (`min(end, 23*59) // 60`) while taking the
+    minute from the raw value, so an after-midnight bound like 1440 became 23:00
+    instead of 23:59 - shrinking or inverting the evidence window.
+    """
+    m = max(0, min(minutes, 23 * 60 + 59))
+    return _t(m // 60, m % 60)
+
+
 def _covered_minutes(claims: List[Claim]) -> int:
     """Minutes of the evening these claims account for, overlaps merged once."""
     spans = sorted((c.start_min, c.end_min) for c in claims if c.has_window)
@@ -392,6 +405,19 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
     # once; everything past the first finding is the same movement re-counted.
     minted_self = False
 
+    # The claim the engine deliberately misquoted last turn, if a probe is now
+    # being answered. Any "movement" the learner shows on THAT claim this turn is
+    # a response to the engine's own planted lie, not spontaneous inconsistency -
+    # so it must not mint a contradiction, or acquiescing to the misquote (which
+    # resolve_premise records as a miss that "costs NOTHING") would instead cost
+    # a wobble and supersede their true statement with the false one. Scoped to
+    # the single misquoted claim on the single turn the probe is resolved; if
+    # they keep running with the false version later, the probe is closed by then
+    # and the ordinary machinery catches it.
+    premise_claim_id = None
+    if state.premise_open and state.premise_open.get("posed_turn", turn_seq) < turn_seq:
+        premise_claim_id = state.premise_open.get("claim_id")
+
     for cid in new_ids:
         claim = spans.get(cid)
         if claim is None:                      # no time information at all
@@ -402,7 +428,8 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
         if matched is not None:
             if original is not None:
                 original.restates = matched.id
-            found.extend(_retelling_conflicts(state, claim, matched, turn_seq))
+            if matched.id != premise_claim_id:
+                found.extend(_retelling_conflicts(state, claim, matched, turn_seq))
 
         # Self-contradiction: does this replace something they already said?
         # Skipped for a re-statement, which has just been measured against the
@@ -411,6 +438,8 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
         # them somewhere they had not walked into before, and that is news.
         for prior in (normalise(state.claims) if matched is None and not minted_self else []):
             if prior.id == cid or prior.turn_seq >= claim.turn_seq:
+                continue
+            if prior.id == premise_claim_id:   # answering a planted misquote; not a wobble
                 continue
             prior_row = state.claim(prior.id)
             if prior_row is None or prior_row.superseded_by:
@@ -501,9 +530,24 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
 
         # Against the evidence - what makes SUE mechanical rather than
         # hand-written: they commit, and the engine knows what they walked into.
-        from datetime import time as _t
-        window = (_t(claim.start_min // 60 % 24, claim.start_min % 60),
-                  _t(min(claim.end_min, 23 * 60 + 59) // 60 % 24, claim.end_min % 60))
+        #
+        # Built from STATED bounds only, never the normalised (invented) ones -
+        # the same founding rule the self, retelling and breach checks all obey.
+        # A single stated bound is a POINT in time, not a span reaching to the
+        # edge of the window: "I got to the pub about nine" commits them to being
+        # there AT nine, not through the whole evening, so it cannot be walked
+        # into evidence covering a later hour. This is SUE's own philosophy - the
+        # clash fires on a committed fact - and it means the detective has to
+        # extract the second bound before a half-open alibi can be pinned. A fully
+        # stated alibi that overlaps the mast still collides, which is the jeopardy
+        # the ending is designed around.
+        stated_lo = original.start_min if original else None
+        stated_hi = original.end_min if original else None
+        if stated_lo is None and stated_hi is None:
+            continue                              # a place with no committed time
+        lo = stated_lo if stated_lo is not None else stated_hi
+        hi = stated_hi if stated_hi is not None else stated_lo
+        window = (_to_time(lo), _to_time(hi))
         for ev in case.evidence_for(window, claim.location):
             if ev.id in state.disclosed:
                 continue
@@ -583,10 +627,27 @@ def update_pressure(state: InterviewState, new_contradictions: List[Contradictio
     for c in new_contradictions:
         gain += _PRESSURE_FOR.get(c.kind, 0.05)
 
-    if report.gaps:
-        gain += min(0.02 * len(report.gaps), 0.04)
-    if report.impossible:
-        gain += 0.05
+    # A gap or impossible journey is a standing fact, so it is charged ONCE, when
+    # it first appears - not every turn it persists. Ledgered by a stable
+    # signature; re-seeing an already-charged artifact adds nothing, which is
+    # what stops one unresolved artifact ratcheting pressure every turn (and an
+    # unattended mic charging it by wall-clock until the interview self-concludes).
+    charged = set(state.charged_artifacts)
+    new_gaps = 0
+    for g in report.gaps:
+        sig = f"gap:{g.start_min}:{g.end_min}"
+        if sig not in charged:
+            charged.add(sig)
+            new_gaps += 1
+    if new_gaps:
+        gain += min(0.02 * new_gaps, 0.04)
+    for m in report.impossible:
+        sig = f"imp:{m.a.location}:{m.b.location}:{m.a.end_min}:{m.b.start_min}"
+        if sig not in charged:
+            charged.add(sig)
+            gain += 0.05
+    state.charged_artifacts = sorted(charged)
+
     if analysis.evasive:
         gain += 0.06
         state.evasions += 1
@@ -653,19 +714,32 @@ def advance_stage(state: InterviewState, report: TimelineReport) -> None:
         stage = Stage.FREE_RECALL
     elif stage is Stage.FREE_RECALL and (report.blocks or state.turn >= 5):
         stage = Stage.PROBE
-    # Probing does not end because enough ground has been covered - it ends when
-    # the account is dense enough to be worth attacking. Challenging a list of
-    # bare assertions is what made the techniques fire into a vacuum. The
-    # patience limit is the escape hatch: a learner who cannot produce detail is
-    # moved on rather than held here.
-    elif stage is Stage.PROBE and report.complete and (
-            state.contradictions or len(state.topics_covered) >= 3) and (
-            density.testable(state.claims) or state.turn >= PROBE_PATIENCE):
+    # Probing normally ends when the account is dense enough to be worth attacking
+    # - challenging a list of bare assertions is what made the techniques fire into
+    # a vacuum. But the patience limit is an UNCONDITIONAL escape, not one more
+    # thing gated behind that density: report.complete needs three timed blocks,
+    # which a sparse account never reaches, so a learner who cannot produce detail
+    # would otherwise be trapped in Probe forever and the interview could never
+    # end - a longer interview as punishment for lower proficiency. Past patience
+    # they are moved on regardless; Closure then handles the thin account fairly.
+    elif stage is Stage.PROBE and (
+            (report.complete
+             and (state.contradictions or len(state.topics_covered) >= 3)
+             and density.testable(state.claims))
+            or state.turn >= PROBE_PATIENCE):
         stage = Stage.CHALLENGE
     elif stage is Stage.CHALLENGE and (
             (not state.open_contradictions and state.turn >= 14)
             or state.pressure >= 0.9
             or state.turn >= MAX_TURNS):
+        stage = Stage.CLOSURE
+
+    # Absolute backstop: nothing runs past MAX_TURNS in a non-terminal stage.
+    # The stage machine advances one step per call, so a run that reaches the cap
+    # while still early (an account so thin it never left Free Recall) would
+    # otherwise never conclude. Defence in depth against any future gate that
+    # could trap a learner mid-interview.
+    if state.turn >= MAX_TURNS and stage is not Stage.CLOSURE:
         stage = Stage.CLOSURE
 
     if stage.value != state.stage:

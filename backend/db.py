@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (JSON, Column, DateTime, Float, ForeignKey, Integer,
-                        String, Text, create_engine, inspect, text)
+                        String, Text, UniqueConstraint, create_engine, inspect, text)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -121,6 +121,12 @@ class Turn(Base):
                           nullable=False, index=True)
     seq = Column(Integer, nullable=False)
 
+    # One row per (interview, seq). The chat path serialises per interview so seq
+    # is assigned without a race, and this makes a double-submit fail loudly
+    # rather than silently writing a duplicate that scrambles the replay order.
+    __table_args__ = (UniqueConstraint("interview_id", "seq",
+                                       name="uq_turns_interview_seq"),)
+
     role = Column(String(20), nullable=False)          # user | agent
     agent_name = Column(String(50), nullable=True)     # Reynolds | Chen | System
     text = Column(Text, nullable=False)
@@ -166,10 +172,19 @@ class Claim(Base):
     text = Column(Text, nullable=False)
     start_min = Column(Integer, nullable=True)      # minutes past midnight
     end_min = Column(Integer, nullable=True)
-    location = Column(String(64), nullable=True)
+    location = Column(String(64), nullable=True)    # one of the four case locations
+    place = Column(String(255), nullable=True)      # what they called it, verbatim
     activity = Column(String(255), nullable=True)
+    people = Column(JSON, nullable=True)            # names/entities they mentioned
+    topic = Column(String(128), nullable=True)      # which thread it belongs to
 
+    # The assessment reads these: a superseded claim is one they withdrew, a
+    # restatement ties a second telling to its first, an inferred bound is one
+    # the timeline filled in rather than one they stated. Without them the table
+    # showed every claim as an independent, live, first-time commitment.
     superseded_by = Column(String(36), nullable=True)
+    restates = Column(String(36), nullable=True)
+    inferred = Column(Integer, nullable=False, default=0)
     vouched_by_chen = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=_now)
 
@@ -190,6 +205,20 @@ _ADDED_COLUMNS = {
         "exchange_id": "VARCHAR(36)",
         "tactic": "VARCHAR(50)",
     },
+    "claims": {
+        "place": "VARCHAR(255)",
+        "people": "JSON",
+        "topic": "VARCHAR(128)",
+        "restates": "VARCHAR(36)",
+        "inferred": "INTEGER DEFAULT 0",
+    },
+}
+
+# Unique indexes to create on existing databases (create_all makes them for
+# fresh ones). Wrapped in try/except at apply time: a table already holding
+# duplicate rows would reject the index, and that must not block startup.
+_ADDED_UNIQUE_INDEXES = {
+    "uq_turns_interview_seq": ("turns", ["interview_id", "seq"]),
 }
 
 
@@ -233,6 +262,18 @@ def _ensure_columns() -> None:
                     # SQLite gained DROP COLUMN in 3.35. On anything older the
                     # column stays; it is harmless once it is nullable.
                     print(f"  db: could not drop {table}.{name} ({e})")
+
+        for index_name, (table, cols) in _ADDED_UNIQUE_INDEXES.items():
+            if table not in existing_tables:
+                continue
+            try:
+                conn.execute(text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {table} ({', '.join(cols)})"))
+            except Exception as e:
+                # Existing duplicate rows would reject the index. Skip rather
+                # than block startup - the per-interview lock prevents new ones.
+                print(f"  db: could not add unique index {index_name} ({e})")
 
 
 def init_db() -> None:

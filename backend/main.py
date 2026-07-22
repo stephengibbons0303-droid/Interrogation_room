@@ -135,5 +135,10 @@ async def stt_endpoint(audio: UploadFile = File(...)):
     return {"text": response.json().get("text", "")}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    # 8013 is this repo's registered backend port (CLAUDE.md / ~/.claude/PORTS.md);
+    # 8000 is SAIF's. Binds loopback by default - /tts and /stt are unauthenticated
+    # relays to the local speech models, and there is no reason to expose them (or
+    # the auth API) to the LAN unless explicitly asked via HOST.
+    port = int(os.environ.get("PORT", 8013))
+    host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port)

@@ -30,6 +30,28 @@ _MAX_CACHED_AGENTS = 64
 _agents: "OrderedDict[str, InterrogationAgent]" = OrderedDict()
 _lock = threading.Lock()
 
+# One lock per interview, so two concurrent chats for the SAME interview (two
+# tabs, or a silence trigger racing a typed send) run one after the other rather
+# than interleaving mutations of a shared agent - or each hydrating its own and
+# clobbering the other's engine_state on commit. `chat` is a sync endpoint, so
+# FastAPI runs it in a threadpool and this really can happen. Bounded in lockstep
+# with the agent cache; a lock evicted while still held simply finishes on its
+# holder's reference, and the unique (interview_id, seq) index is the backstop.
+_interview_locks: "OrderedDict[str, threading.Lock]" = OrderedDict()
+
+
+def _interview_lock(interview_id: str) -> threading.Lock:
+    with _lock:
+        lk = _interview_locks.get(interview_id)
+        if lk is None:
+            lk = threading.Lock()
+            _interview_locks[interview_id] = lk
+            while len(_interview_locks) > _MAX_CACHED_AGENTS * 2:
+                _interview_locks.popitem(last=False)
+        else:
+            _interview_locks.move_to_end(interview_id)
+        return lk
+
 
 def _hydrate(interview: Interview) -> InterrogationAgent:
     """Rebuild an agent from persisted rows, engine state included.
@@ -244,14 +266,43 @@ def delete_interview(interview_id: str, user: User = Depends(get_current_user),
 @router.post("/{interview_id}/chat", response_model=ChatResponse)
 def chat(interview_id: str, body: ChatRequest,
          user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    iv = _owned(interview_id, user, db)
-    if iv.outcome:
-        raise HTTPException(status_code=409, detail="This interview has concluded")
+    # Serialise the whole turn per interview: read, run the agent, and commit all
+    # happen with no other chat for this interview interleaving. Held across
+    # get_agent too, so the cache-miss case cannot hydrate two divergent agents.
+    with _interview_lock(interview_id):
+        iv = _owned(interview_id, user, db)
+        if iv.outcome:
+            raise HTTPException(status_code=409, detail="This interview has concluded")
 
-    agent = get_agent(iv)
-    is_silence = body.message.strip() == "[SILENCE]"
-    result = agent.process_message(body.message)
+        agent = get_agent(iv)
+        is_silence = body.message.strip() == "[SILENCE]"
+        try:
+            result = agent.process_message(body.message)
+            _persist_turn(db, iv, agent, result, body, is_silence)
+            db.commit()
+        except HTTPException:
+            raise
+        except Exception:
+            # process_message already advanced the cached agent's turn, history
+            # and claims; the commit that would have recorded them just failed and
+            # rolled back. The cached agent is now ahead of the database, so a
+            # retry would double-count. Drop it: the next request rehydrates from
+            # the DB, the true source of truth, and the failed turn is as if it
+            # never happened.
+            drop_agent(interview_id)
+            raise
 
+    utterances = result.get("utterances", [])
+    return ChatResponse(
+        utterances=[UtteranceOut(**u) for u in utterances],
+        phase=result.get("stage", iv.phase), turn=result.get("turn", iv.turn_count),
+        interview_id=iv.id, outcome=iv.outcome, tactic=result.get("tactic"),
+    )
+
+
+def _persist_turn(db: Session, iv: Interview, agent: InterrogationAgent,
+                  result: dict, body: ChatRequest, is_silence: bool) -> None:
+    """Write this turn's rows and the engine snapshot. Caller holds the lock."""
     stage = result.get("stage", iv.phase)
     seq = len(iv.turns)
 
@@ -273,16 +324,21 @@ def chat(interview_id: str, body: ChatRequest,
                     emotion=u.get("emotion")))
         seq += 1
 
-    # New structured claims, for the post-session assessment.
-    known = {c.text for c in iv.claims}
+    # Sync the structured claims the post-session assessment reads. Keyed by
+    # claim id, not text: a claim is superseded or restated on a LATER turn than
+    # it was created, so an insert-only, text-deduped write never recorded those
+    # mutations - the table showed every claim as live, first-time and unlinked.
+    # Upsert instead: update the row's mutable fields if it exists, else insert.
+    existing = {row.id: row for row in iv.claims}
     for c in agent.state.claims:
-        if c.text in known:
-            continue
-        db.add(ClaimRow(id=c.id, interview_id=iv.id, turn_seq=c.turn_seq,
-                        text=c.text, start_min=c.start_min, end_min=c.end_min,
-                        location=c.location, activity=c.activity,
-                        superseded_by=c.superseded_by,
-                        vouched_by_chen=1 if c.vouched_by_chen else 0))
+        row = existing.get(c.id)
+        if row is None:
+            db.add(_claim_row(iv.id, c))
+        else:
+            row.superseded_by = c.superseded_by
+            row.restates = c.restates
+            row.vouched_by_chen = 1 if c.vouched_by_chen else 0
+            row.topic = c.topic
 
     # Persist the whole engine so the interview resumes exactly as left.
     iv.engine_state = agent.state.to_dict()
@@ -293,10 +349,18 @@ def chat(interview_id: str, body: ChatRequest,
     iv.outcome = result.get("outcome")
     if iv.outcome:
         iv.status = "completed"
-    db.commit()
 
-    return ChatResponse(
-        utterances=[UtteranceOut(**u) for u in utterances],
-        phase=stage, turn=result.get("turn", iv.turn_count),
-        interview_id=iv.id, outcome=iv.outcome, tactic=result.get("tactic"),
-    )
+
+def _claim_row(interview_id: str, c) -> ClaimRow:
+    # `inferred` records whether the learner gave a FULL span or a partial one:
+    # a claim missing a bound is one the timeline fills in, and the assessment
+    # must know a bound was invented rather than stated. It is derived from the
+    # raw claim here - the runtime `inferred` flag lives only on the normalised
+    # copies the timeline builds, never on the stored claim.
+    return ClaimRow(
+        id=c.id, interview_id=interview_id, turn_seq=c.turn_seq, text=c.text,
+        start_min=c.start_min, end_min=c.end_min, location=c.location,
+        place=c.place, activity=c.activity, people=c.people, topic=c.topic,
+        superseded_by=c.superseded_by, restates=c.restates,
+        inferred=1 if (c.start_min is None or c.end_min is None) else 0,
+        vouched_by_chen=1 if c.vouched_by_chen else 0)

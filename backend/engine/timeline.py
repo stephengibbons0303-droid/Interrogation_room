@@ -188,16 +188,28 @@ def build(claims: List[Claim]) -> TimelineReport:
     if WINDOW_END_MIN - cursor >= MIN_GAP_MINUTES:
         report.gaps.append(Gap(cursor, WINDOW_END_MIN))
 
-    # Two places at once.
+    # Two places at once. Never between claims with an INFERRED bound: the
+    # overlap would rest on a time the learner never stated but the normaliser
+    # filled in, and "an inferred span may measure coverage but must not accuse
+    # someone of contradicting themselves" (Claim.inferred). The self-check and
+    # the evidence check obey the same rule; this used not to, minting phantom
+    # clashes from consecutive one-bounded narration.
     for i, a in enumerate(blocks):
         for b in blocks[i + 1:]:
+            if a.inferred or b.inferred:
+                continue
             if b.start_min >= a.end_min:
                 continue
             if a.location and b.location and a.location != b.location:
                 report.overlaps.append(Overlap(a, b))
 
-    # Journeys that could not have been made in the time claimed.
+    # Journeys that could not have been made in the time claimed. Same rule: a
+    # missing end filled with the next block's start makes `available` zero by
+    # construction, so an account narrated as touching one-bounded segments
+    # ("cafe until eight", "walked home") minted a phantom impossible move.
     for a, b in zip(blocks, blocks[1:]):
+        if a.inferred or b.inferred:
+            continue
         if not (a.location and b.location) or a.location == b.location:
             continue
         origin = LOCATIONS.get(a.location)

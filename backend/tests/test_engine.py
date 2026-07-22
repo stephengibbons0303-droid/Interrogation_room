@@ -71,6 +71,21 @@ r = tl.build([block("a", 20, 0, 21, 0, "cafe"),
               block("b", 21, 30, 22, 0, "bridge")])
 check("allows the journey when time permits", not r.impossible)
 
+# Never convict on invented bounds. "cafe until eight" (end only) then "walked
+# home" (start only) are both one-bounded; the normaliser fills the gaps, which
+# used to mint a phantom impossible move and a phantom clash from touching
+# segments the learner narrated in good faith.
+r = tl.build([Claim(id="a", turn_seq=1, text="cafe until eight",
+                    end_min=20 * 60, location="cafe"),
+              Claim(id="b", turn_seq=1, text="walked straight home",
+                    start_min=20 * 60, location="home")])
+check("no phantom impossible move from one-bounded narration", not r.impossible,
+      str([m.describe() for m in r.impossible]))
+check("no phantom overlap from one-bounded narration", not r.overlaps)
+# A fully-stated genuine impossibility is still caught (neither bound inferred).
+r = tl.build([block("a", 20, 0, 21, 0, "cafe"), block("b", 21, 5, 22, 0, "bridge")])
+check("a fully-stated impossible journey is still caught", len(r.impossible) == 1)
+
 # The gate that reverse chronology depends on.
 r = tl.build([])
 check("empty timeline is NOT complete", not r.complete)
@@ -511,6 +526,29 @@ dr.update_pressure(st, [], _an("Yes.", responsive=True), tl.build(sparse))
 check("a thin account does NOT raise pressure", st.pressure <= before,
       "a learner short of vocabulary is doing the thing the app exists to make them do")
 
+# A standing timeline artifact is charged ONCE, not every turn it persists.
+# cafe->bridge is 25 min on foot; 5 claimed -> a real impossible move.
+imp = [block("a", 20, 0, 21, 0, "cafe"), block("b", 21, 5, 22, 0, "bridge")]
+rep_imp = tl.build(imp)
+check("the fixture really has an impossible move", bool(rep_imp.impossible))
+st = InterviewState()
+st.claims = list(imp)
+dr.update_pressure(st, [], _an("I walked over.", responsive=True), rep_imp)
+after_first = st.pressure
+check("the impossible move charges pressure the first time", after_first > 0)
+for _ in range(10):                          # ten more turns, same standing artifact
+    dr.update_pressure(st, [], _an("Same as I said.", responsive=True), rep_imp)
+check("but never again while it stands - no ratchet",
+      st.pressure <= after_first,
+      f"pressure {after_first:.2f} -> {st.pressure:.2f}; a stale artifact must not compound")
+
+# The signature is stable across a resume (it is persisted, not recomputed).
+round_tripped = InterviewState.from_dict(st.to_dict())
+before_resume = round_tripped.pressure
+dr.update_pressure(round_tripped, [], _an("Still the same.", responsive=True), rep_imp)
+check("and the charge is not repeated after a resume",
+      round_tripped.pressure <= before_resume)
+
 
 print("\nPROBE PATIENCE  (probing ends on substance, not on a counter)")
 
@@ -532,6 +570,40 @@ st.topics_covered = ["identity", "the evening", "Emily"]
 dr.advance_stage(st, tl.build(st.claims))
 check("a rich account reaches challenge without waiting",
       st.stage == Stage.CHALLENGE.value)
+
+# The trap: a SPARSE account never reaches report.complete (needs 3 timed
+# blocks), so the patience escape must NOT be gated behind it, and the interview
+# must still be able to conclude.
+sparse_pair = [Claim(id="s1", turn_seq=1, text="I was out", start_min=19 * 60, location="cafe"),
+               Claim(id="s2", turn_seq=2, text="then home", start_min=21 * 60, location="home")]
+st = InterviewState(stage=Stage.PROBE.value, turn=dr.PROBE_PATIENCE)
+st.claims = list(sparse_pair)
+check("the sparse account is genuinely not report.complete",
+      not tl.build(st.claims).complete)
+dr.advance_stage(st, tl.build(st.claims))
+check("a sparse account still escapes Probe at the patience limit",
+      st.stage == Stage.CHALLENGE.value,
+      "report.complete needs 3 timed blocks a thin account never reaches")
+
+# And it can actually END - drive a stuck-from-the-start run to the cap.
+st = InterviewState(stage=Stage.PROBE.value, turn=1)
+st.claims = list(sparse_pair)
+reached = None
+for t in range(1, dr.MAX_TURNS + 3):
+    st.turn = t
+    dr.advance_stage(st, tl.build(st.claims))
+    if Stage(st.stage) is Stage.CLOSURE:
+        reached = t
+        break
+check("a perpetually sparse account still reaches Closure by MAX_TURNS",
+      reached is not None and reached <= dr.MAX_TURNS,
+      f"reached closure at turn {reached}")
+
+# The MAX_TURNS backstop closes even a run somehow still in an early stage.
+st = InterviewState(stage=Stage.ENGAGE.value, turn=dr.MAX_TURNS)
+dr.advance_stage(st, tl.build([]))
+check("the backstop closes any stage stuck at the cap",
+      st.stage == Stage.CLOSURE.value)
 
 
 print("\nTHE CONCEALMENT PAIR")
@@ -743,6 +815,23 @@ said(st, 3, "at the cafe from seven to eight", 19 * 60, 20 * 60, "cafe", "the ca
 found = said(st, 4, "at the pub from seven to eight", 19 * 60, 20 * 60, None, "the pub")
 check("a genuine two-places claim, fully stated, is still caught",
       any(c.kind == "self" for c in found))
+
+# Evidence never fires on invented bounds either. A single stated time is a
+# POINT, not a span reaching the window edge: "got to the pub about nine"
+# commits them to nine, not to the whole evening, so it cannot walk into
+# evidence covering a later hour.
+st = InterviewState()
+found = said(st, 3, "got to the pub about nine", 21 * 60, None, None, "the pub")
+check("a half-open claim mints no evidence contradiction",
+      not [c for c in found if c.kind == "evidence"],
+      "the founding rule: never convict on a bound the learner did not state")
+# But a fully committed alibi that overlaps the mast still collides - the
+# jeopardy the ending is designed around.
+st = InterviewState()
+found = said(st, 3, "I was home from nine until eleven", 21 * 60, 23 * 60, "home", "home")
+check("a stated span overlapping the mast still clashes",
+      any(c.kind == "evidence" for c in found),
+      "SUE fires on a committed fact; this one is fully committed")
 
 # A departure time is when a stay ENDED. Compared as a start, "arrived at 6.30"
 # then "left about 7.45" reads as a 75-minute lie about arriving - which is how
@@ -1116,6 +1205,68 @@ check("and costs NOTHING - no pressure, no lost credit",
       st.pressure == before_pressure and st.exculpation == before_exc,
       "an L2 learner missing a misquote may be comprehension, not acquiescence")
 check("either way the probe closes", st.premise_open is None)
+
+# Acquiescing to the planted misquote must not convict them. The learner echoes
+# the false time back rather than correcting it; ingest must not read that as a
+# spontaneous self-contradiction against the claim the engine itself misquoted.
+st = storied()
+cafe = st.claims[0]                                  # "...cafe until quarter to eight" (19:45)
+st.premise_open = {"claim_id": cafe.id, "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "you left the cafe at about 18:45", "quote": cafe.text,
+                   "posed_turn": 6}
+st.turn = 7
+before_pressure = st.pressure
+echo = dr.ingest(st, dr.Extraction(claims=[
+    {"text": "yes, I left about quarter to seven", "end_min": 18 * 60 + 45,
+     "location": "cafe", "place": "the cafe"}]), _an("x", responsive=True), None, 7)
+check("echoing a planted misquote mints no contradiction",
+      not [c for c in echo if c.kind in ("self", "retelling")],
+      str([(c.kind, c.detail[:50]) for c in echo]))
+check("and does not supersede their true statement", cafe.superseded_by is None)
+dr.resolve_premise(st, False, st.claims[-1:])
+dr.update_pressure(st, echo, _an("x", responsive=True), tl.build(st.claims))
+check("acquiescing to the misquote costs no pressure",
+      st.pressure <= before_pressure,
+      "letting a misquote slide may be comprehension, not a lie")
+
+# A genuine contradiction on a DIFFERENT claim is still caught while a probe is
+# open - the guard is scoped to the one misquoted claim, not a free pass.
+st = storied()
+cafe = st.claims[0]
+st.premise_open = {"claim_id": cafe.id, "kind": "time", "true_min": 19 * 60 + 45,
+                   "false": "you left the cafe at about 18:45", "quote": cafe.text,
+                   "posed_turn": 6}
+st.turn = 7
+other = dr.ingest(st, dr.Extraction(claims=[
+    {"text": "the Indian place, we got there about half nine", "start_min": 21 * 60 + 30,
+     "place": "the Indian restaurant"}]), _an("x", responsive=True), None, 7)
+check("a contradiction on a different claim still fires while a probe is open",
+      any(c.kind == "self" for c in other), str([c.detail[:50] for c in other]))
+
+
+print("\nTACTIC VALIDATION  (the model may only use what it was offered)")
+
+from agent import _validated_tactic                     # noqa: E402
+
+
+class _T:                                               # minimal stand-in for a Tactic
+    def __init__(self, tid): self.id = tid
+
+
+offered = [_T("funnel_probe"), _T("detail_expansion"), _T("forced_choice")]
+check("an offered tactic passes through",
+      _validated_tactic("detail_expansion", offered) == "detail_expansion")
+check("bracket echoes are stripped",
+      _validated_tactic("[funnel_probe]", offered) == "funnel_probe")
+check("an unoffered tactic collapses to the top offer",
+      _validated_tactic("challenge_contradiction", offered) == "funnel_probe",
+      "a phantom challenge would mark evidence raised and flip the verdict")
+check("a hallucinated id collapses too",
+      _validated_tactic("interrogate_harder", offered) == "funnel_probe")
+check("with no shortlist the cleaned value passes through",
+      _validated_tactic("anything", []) == "anything")
+check("empty stays empty", _validated_tactic("", offered) == "funnel_probe"
+      and _validated_tactic(None, []) == "")
 
 st = storied()
 st.premise_open = {"claim_id": "x", "kind": "time", "true_min": 19 * 60 + 45,

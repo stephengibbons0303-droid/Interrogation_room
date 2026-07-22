@@ -8,6 +8,10 @@ venv/
 .env.local
 .DS_Store
 
+# JWT signing key, auto-generated on first boot when SECRET_KEY is unset.
+# A committed signing key is a published signing key.
+.secret_key
+
 # Local databases. These hold real user data - password hashes and learner
 # interview transcripts - and are recreated on first run. Never commit them.
 *.db

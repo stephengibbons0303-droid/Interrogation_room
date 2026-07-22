@@ -173,6 +173,30 @@ class TurnOut(BaseModel):
     claims: List[ClaimOut] = Field(default_factory=list)
 
 
+def _validated_tactic(reported: Optional[str], options) -> str:
+    """The tactic the model claims it used, constrained to one it was offered.
+
+    The shortlist is presented as "[tactic_id] instruction" and the model
+    sometimes echoes the brackets, so those are stripped first. But the deeper
+    problem is a model that reports a tactic it was never offered - a stale id
+    lingering in the chat history, or a plain hallucination. Every gate in
+    _apply keys off this string (cooldowns, evidence and challenge raised-marking,
+    retelling arming), so an unoffered id bypasses the shortlist's stage,
+    precondition and cooldown checks entirely: a phantom "challenge_contradiction"
+    reported in Probe marks evidence raised and can flip the verdict to DETAINED;
+    a phantom "reverse_chronology" re-arms the retelling window past its cap.
+
+    Anything not on the shortlist we actually presented collapses to the top
+    offer, which is a legal move for this stage and state by construction. With
+    no shortlist (an empty fallback turn) the cleaned value passes through.
+    """
+    cleaned = (reported or "").strip().strip("[]").strip()
+    offered = [t.id for t in (options or [])]
+    if offered and cleaned not in offered:
+        return offered[0]
+    return cleaned
+
+
 class InterrogationAgent:
     """One live interrogation, driven by the engine."""
 
@@ -232,7 +256,11 @@ class InterrogationAgent:
         # only "did it answer the question" needs one, and that arrives below.
         prelim = analyse("" if is_silence else user_message)
 
-        self.state.tick_cooldowns()
+        # Cooldowns tick per TURN, not per event. A silence is not a turn - the
+        # learner said nothing - so ticking here let an unattended mic (which
+        # re-sends [SILENCE] every 4-8s) erode every cooldown by wall-clock.
+        if not is_silence:
+            self.state.tick_cooldowns()
 
         # Advance the stage BEFORE choosing what to say. Advancing afterwards
         # meant the turn that ended the interview was still generated as a
@@ -284,7 +312,7 @@ class InterrogationAgent:
               f"{len(self.history[-14:])} messages of history)")
 
         return self._apply(result, user_message, is_silence, prelim, ctx,
-                           speaker, reason, disclosure, offered_premise)
+                           speaker, reason, disclosure, offered_premise, options)
 
     def _context_messages(self):
         out = []
@@ -297,7 +325,7 @@ class InterrogationAgent:
 
     def _apply(self, result: TurnOut, user_message: str, is_silence: bool,
                prelim, ctx, speaker: str, reason: str, disclosure,
-               offered_premise=None) -> Dict[str, Any]:
+               offered_premise=None, options=None) -> Dict[str, Any]:
         """Fold the model's reply back into engine state."""
         # Up to three: an aside is two detectives conferring plus the one who
         # then turns back to the subject.
@@ -316,11 +344,14 @@ class InterrogationAgent:
         if is_aside:
             self.state.asides_this_stage += 1
 
-        # The shortlist is presented as "[tactic_id] instruction", and the model
-        # sometimes echoes the brackets back. Left unstripped, the cooldown is
-        # keyed on "[minimisation]" and never matches "minimisation", so the
-        # tactic could repeat every turn.
-        result.tactic_used = (result.tactic_used or "").strip().strip("[]").strip()
+        # Constrain the reported tactic to one we actually offered (see
+        # _validated_tactic). Everything below keys off this string, so an
+        # unoffered id would bypass every shortlist gate.
+        cleaned = _validated_tactic(result.tactic_used, options)
+        if cleaned != (result.tactic_used or "").strip().strip("[]").strip() and options:
+            print(f"WARNING: model reported unoffered tactic "
+                  f"{result.tactic_used!r}; using {cleaned!r}")
+        result.tactic_used = cleaned
 
         # First clear statement of their name wins; later turns cannot rewrite it.
         if not self.player_name and result.subject_name:
@@ -370,8 +401,14 @@ class InterrogationAgent:
         # their answer to the previous question; the second telling does not
         # begin until they respond to the request being made this turn.
         dr.arm_retelling(self.state, result.tactic_used)
-        dr.update_pressure(self.state, new_contradictions, final, ctx.timeline)
-        stung = dr.update_chen(self.state, new_contradictions, prelim.struggling)
+        # Pressure moves on what the learner did; on silence they did nothing, so
+        # it must not move at all - otherwise an idling mic drains pressure to 0
+        # on a clean account, or ratchets it to the 0.9 closure trigger on a dirty
+        # one, ending the interview with nobody in the room.
+        stung = False
+        if not is_silence:
+            dr.update_pressure(self.state, new_contradictions, final, ctx.timeline)
+            stung = dr.update_chen(self.state, new_contradictions, prelim.struggling)
 
         # The stage was settled at the top of the turn, so the outcome now
         # follows a line that was actually written as a closing one.

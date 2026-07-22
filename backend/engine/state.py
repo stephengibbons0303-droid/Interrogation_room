@@ -143,6 +143,13 @@ class InterviewState:
     # tactic id -> turns remaining before it may be used again
     cooldowns: Dict[str, int] = field(default_factory=dict)
 
+    # Signatures of timeline gaps / impossible-moves already charged to pressure.
+    # A gap or impossible journey is a standing FACT about the account, not a
+    # fresh event each turn - without this ledger it re-charged every call, so a
+    # single unresolved artifact ratcheted pressure to the ceiling regardless of
+    # how well the learner answered (and, on an idling mic, with nobody there).
+    charged_artifacts: List[str] = field(default_factory=list)
+
     chen_stance: str = ChenStance.NEUTRAL.value
     speaker_counts: Dict[str, int] = field(default_factory=lambda: {"Reynolds": 0, "Chen": 0})
     asides_this_stage: int = 0

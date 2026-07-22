@@ -18,13 +18,60 @@ Two intentional differences:
     by SAIF's passlib and vice versa.
 """
 import os
+import secrets
+import warnings
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import bcrypt
 from jose import JWTError, jwt
 
-SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE-THIS-IN-PRODUCTION-USE-LONG-RANDOM-STRING")
+# Any token signed with a known key is forgeable: anyone who can reach the port
+# could mint {"sub": <any user id>} and drive that account. So there is NO
+# hard-coded fallback. The old default was a literal committed string, which is
+# exactly a published signing key.
+#
+# Resolution order:
+#   1. SECRET_KEY from the environment  - the production path; set it explicitly,
+#      and set the SAME value on every host if you ever run more than one.
+#   2. a random key persisted to backend/.secret_key (gitignored) - the local
+#      path. Generated once on first boot, then stable across restarts so a dev
+#      is not logged out every time the server bounces. Never committed.
+_PLACEHOLDER = "CHANGE-THIS-IN-PRODUCTION-USE-LONG-RANDOM-STRING"
+_KEY_FILE = Path(__file__).resolve().parent / ".secret_key"
+
+
+def _load_secret_key() -> str:
+    env = os.getenv("SECRET_KEY")
+    if env and env != _PLACEHOLDER:
+        return env
+    if env == _PLACEHOLDER:
+        warnings.warn(
+            "SECRET_KEY is set to the old placeholder value; ignoring it and using "
+            "a generated key. Set a real SECRET_KEY in the environment.", stacklevel=2)
+    try:
+        existing = _KEY_FILE.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    generated = secrets.token_hex(32)
+    try:
+        _KEY_FILE.write_text(generated, encoding="utf-8")
+        try:                                    # best-effort lockdown; no-op on Windows
+            os.chmod(_KEY_FILE, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+    except OSError as e:
+        warnings.warn(
+            f"Could not persist a signing key to {_KEY_FILE} ({e}); using an "
+            "in-memory key. Tokens will not survive a restart. Set SECRET_KEY to fix.",
+            stacklevel=2)
+    return generated
+
+
+SECRET_KEY = _load_secret_key()
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
