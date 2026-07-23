@@ -206,6 +206,13 @@ _ADDED_COLUMNS = {
         "engine_state": "JSON",
         "brief_id": "VARCHAR(64)",
         "outcome": "VARCHAR(32)",
+        # Re-added if missing. A previous build DROPPED these (they were dead),
+        # and the model now carries them again as nullable-with-default for
+        # forward/backward compatibility - so a database where they were already
+        # dropped needs them back, or every insert references a column the table
+        # no longer has. Idempotent: skipped where they are already present.
+        "escalation_score": "INTEGER DEFAULT 0",
+        "contradiction_count": "INTEGER DEFAULT 0",
     },
     "turns": {
         "addressed_to": "VARCHAR(20)",
