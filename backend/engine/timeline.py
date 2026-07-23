@@ -1,0 +1,253 @@
+"""Timeline Validator.
+
+Specified in interrogation_learning_system.md and never built - which is why
+reverse chronology could never fire "at a later stage, once the timeline has
+been given": nothing knew a timeline existed.
+
+Pure functions over claims. No LLM, no I/O, so the whole thing is unit-testable.
+"""
+from dataclasses import dataclass, field, replace
+from datetime import time
+from typing import List, Optional
+
+from scenario.case import LOCATIONS, WINDOW_END, WINDOW_START
+from engine.state import Claim
+
+
+def to_min(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
+def fmt(minutes: int) -> str:
+    h, m = divmod(max(0, minutes), 60)
+    return f"{h % 24:02d}:{m:02d}"
+
+
+def to_time(minutes: int) -> time:
+    """Minutes past midnight to a time, clamped to the evening's last minute.
+
+    Hour and minute both derive from the SAME clamped value. Clamping only the
+    hour term (and taking the minute raw) turned an after-midnight bound like 1440
+    into 23:00 instead of 23:59, shrinking or inverting the evidence window.
+    """
+    m = max(0, min(minutes, 23 * 60 + 59))
+    return time(m // 60, m % 60)
+
+
+def merge_spans(spans) -> List[list]:
+    """Merge overlapping or touching (start, end) intervals into a minimal set.
+
+    The single home for the interval merge that both coverage (build, below) and
+    director._covered_minutes were each doing by hand.
+    """
+    merged: List[list] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    """Minutes two spans share; negative when they are disjoint."""
+    return min(a_end, b_end) - max(a_start, b_start)
+
+
+WINDOW_START_MIN = to_min(WINDOW_START)
+WINDOW_END_MIN = to_min(WINDOW_END)
+WINDOW_MINUTES = WINDOW_END_MIN - WINDOW_START_MIN
+
+# A gap smaller than this is conversational slack, not an unaccounted period.
+MIN_GAP_MINUTES = 20
+
+
+@dataclass
+class Gap:
+    start_min: int
+    end_min: int
+
+    @property
+    def minutes(self) -> int:
+        return self.end_min - self.start_min
+
+    def describe(self) -> str:
+        return f"{fmt(self.start_min)} to {fmt(self.end_min)} ({self.minutes} minutes) is unaccounted for"
+
+
+@dataclass
+class Overlap:
+    a: Claim
+    b: Claim
+
+    def describe(self) -> str:
+        return (f"'{self.a.text}' and '{self.b.text}' cover the same time "
+                f"in different places")
+
+
+@dataclass
+class ImpossibleMove:
+    a: Claim
+    b: Claim
+    needed: int
+    available: int
+
+    def describe(self) -> str:
+        return (f"getting from {self.a.location} to {self.b.location} takes about "
+                f"{self.needed} minutes, but only {self.available} were available")
+
+
+@dataclass
+class TimelineReport:
+    blocks: List[Claim] = field(default_factory=list)
+    gaps: List[Gap] = field(default_factory=list)
+    overlaps: List[Overlap] = field(default_factory=list)
+    impossible: List[ImpossibleMove] = field(default_factory=list)
+    covered_minutes: int = 0
+
+    @property
+    def coverage(self) -> float:
+        return self.covered_minutes / WINDOW_MINUTES if WINDOW_MINUTES else 0.0
+
+    @property
+    def complete(self) -> bool:
+        """Is there enough of an account to be worth attacking?
+
+        This is the gate for reverse chronology, anchoring and topic switching -
+        all of which need something to have been committed to first. Deliberately
+        forgiving: three blocks and half the window is an account, even a thin one.
+        """
+        return len(self.blocks) >= 3 and self.coverage >= 0.5
+
+    @property
+    def has_problems(self) -> bool:
+        return bool(self.gaps or self.overlaps or self.impossible)
+
+    def summary(self) -> str:
+        if not self.blocks:
+            return "No timeline given yet."
+        parts = [f"Accounted for {int(self.coverage * 100)}% of 17:00-24:00."]
+        for g in self.gaps:
+            parts.append("GAP: " + g.describe())
+        for o in self.overlaps:
+            parts.append("CLASH: " + o.describe())
+        for m in self.impossible:
+            parts.append("IMPOSSIBLE: " + m.describe())
+        return " ".join(parts)
+
+
+def normalised(claims: List[Claim]) -> List[Claim]:
+    """Fill in the bound that speech leaves out.
+
+    People do not talk in intervals. "I was at the cafe until eight" gives an end
+    and no start; "I left at ten" gives a start and no end. Requiring both bounds
+    discarded almost every real claim, which left the timeline permanently empty
+    and every technique that depends on it permanently locked.
+
+    A missing start is inferred from the previous claim (or the start of the
+    window); a missing end from the next claim (or the end of the window).
+    Returns copies - the absent bounds are data, and the extractor's honesty
+    about what was actually said should not be overwritten.
+    """
+    usable = sorted(
+        [c for c in claims
+         if c.superseded_by is None and (c.start_min is not None or c.end_min is not None)],
+        key=lambda c: c.start_min if c.start_min is not None else c.end_min,
+    )
+
+    out: List[Claim] = []
+    for i, c in enumerate(usable):
+        start, end = c.start_min, c.end_min
+        inferred = start is None or end is None
+
+        if start is None:
+            prev_end = out[-1].end_min if out else None
+            start = prev_end if prev_end is not None else WINDOW_START_MIN
+            if end is not None and start >= end:
+                start = max(WINDOW_START_MIN, end - 60)
+
+        if end is None:
+            nxt = None
+            if i + 1 < len(usable):
+                n = usable[i + 1]
+                nxt = n.start_min if n.start_min is not None else n.end_min
+            end = nxt if (nxt is not None and nxt > start) else WINDOW_END_MIN
+
+        if end <= start:
+            continue
+
+        out.append(replace(c, start_min=start, end_min=end, inferred=inferred))
+    return out
+
+
+def _clip(claim: Claim) -> Optional[tuple]:
+    """Clamp a claim to the window, or drop it if it falls entirely outside."""
+    start = max(claim.start_min, WINDOW_START_MIN)
+    end = min(claim.end_min, WINDOW_END_MIN)
+    return (start, end) if end > start else None
+
+
+def build(claims: List[Claim]) -> TimelineReport:
+    """Assemble the live claims into a timeline and find everything wrong with it."""
+    report = TimelineReport()
+
+    blocks = normalised(claims)
+    report.blocks = blocks
+    if not blocks:
+        return report
+
+    # Coverage, merging overlapping spans so double-counting cannot inflate it.
+    spans = []
+    for c in blocks:
+        clipped = _clip(c)
+        if clipped:
+            spans.append(clipped)
+    merged = merge_spans(spans)
+    report.covered_minutes = sum(e - s for s, e in merged)
+
+    # Gaps between the merged spans, plus the ends of the window.
+    cursor = WINDOW_START_MIN
+    for start, end in merged:
+        if start - cursor >= MIN_GAP_MINUTES:
+            report.gaps.append(Gap(cursor, start))
+        cursor = max(cursor, end)
+    if WINDOW_END_MIN - cursor >= MIN_GAP_MINUTES:
+        report.gaps.append(Gap(cursor, WINDOW_END_MIN))
+
+    # Two places at once. Never between claims with an INFERRED bound: the
+    # overlap would rest on a time the learner never stated but the normaliser
+    # filled in, and "an inferred span may measure coverage but must not accuse
+    # someone of contradicting themselves" (Claim.inferred). The self-check and
+    # the evidence check obey the same rule; this used not to, minting phantom
+    # clashes from consecutive one-bounded narration.
+    for i, a in enumerate(blocks):
+        for b in blocks[i + 1:]:
+            if a.inferred or b.inferred:
+                continue
+            if b.start_min >= a.end_min:
+                continue
+            if a.location and b.location and a.location != b.location:
+                report.overlaps.append(Overlap(a, b))
+
+    # Journeys that could not have been made in the time claimed. Same rule: a
+    # missing end filled with the next block's start makes `available` zero by
+    # construction, so an account narrated as touching one-bounded segments
+    # ("cafe until eight", "walked home") minted a phantom impossible move.
+    for a, b in zip(blocks, blocks[1:]):
+        if a.inferred or b.inferred:
+            continue
+        if not (a.location and b.location) or a.location == b.location:
+            continue
+        origin = LOCATIONS.get(a.location)
+        if not origin:
+            continue
+        needed = origin.walk_minutes.get(b.location)
+        if needed is None:
+            continue
+        available = b.start_min - a.end_min
+        if available < 0:
+            continue                       # already reported as an overlap
+        if available + 5 < needed:         # small grace for rounding in speech
+            report.impossible.append(ImpossibleMove(a, b, needed, available))
+
+    return report

@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "interrogation-tts",
+      "runtimeExecutable": "C:\\Users\\gibwo\\.claude\\voice\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["backend/speech/tts_server.py"],
+      "port": 7678
+    },
+    {
+      "name": "interrogation-stt",
+      "runtimeExecutable": "C:\\Users\\gibwo\\.claude\\voice\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["backend/speech/stt_server.py"],
+      "port": 7677
+    },
+    {
+      "name": "interrogation-backend",
+      "runtimeExecutable": "backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--app-dir", "backend", "--port", "8013"],
+      "port": 8013
+    },
+    {
+      "name": "interrogation-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "-p", "5185"],
+      "port": 5185
+    }
+  ]
+}

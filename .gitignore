@@ -8,6 +8,29 @@ venv/
 .env.local
 .DS_Store
 
+# JWT signing key, auto-generated on first boot when SECRET_KEY is unset.
+# A committed signing key is a published signing key.
+.secret_key
+
+# Local databases. These hold real user data - password hashes and learner
+# interview transcripts - and are recreated on first run. Never commit them.
+*.db
+*.sqlite
+*.sqlite3
+
+# Chroma vector memory. Runtime state, not source.
+#
+# Chroma splits itself across chroma.sqlite3 (which collections exist, their
+# dimensions and segment ids) and per-segment index directories. Those must stay
+# in lockstep, and git tracks them as independent files with no atomicity
+# between them - so a checkout, stash, revert or merge can pair a sqlite from
+# one moment with index directories from another and leave the store
+# inconsistent. The running server also holds the sqlite open, so git
+# operations fail partway through.
+#
+# Nothing is lost by ignoring it: the memory rebuilds as learners talk.
+backend/chroma_db/
+
 # Node
 node_modules/
 npm-debug.log*

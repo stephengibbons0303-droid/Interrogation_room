@@ -2,8 +2,22 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
+import BriefPanel from './BriefPanel';
+import BriefingScreen from './BriefingScreen';
+import { apiFetch, getInterview, sendMessage, type Modality, type Utterance } from '../lib/api';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
+/** Shown when a detective's line arrives with no audio behind it.
+ *
+ *  Held as a constant so it can be cleared again without wiping a microphone
+ *  message out of the same slot: the two subsystems share one error line, and
+ *  audio recovering says nothing about whether the mic is working. */
+const TTS_SILENT = "The detectives' voices aren't coming through — their words are still on screen.";
+
+/** A failed send. Held as a constant for the same reason as TTS_SILENT: it shares
+ *  the one error slot, and a successful transcription proves the mic works but says
+ *  nothing about the network — so onResult must not wipe this. It is cleared only
+ *  when a round-trip actually succeeds (see `receive`). */
+const CONNECTION_FAILED = "Connection to server failed. Is the backend running?";
 
 interface Message {
     role: 'user' | 'agent';
@@ -12,9 +26,22 @@ interface Message {
     emotion?: string;
     phase?: string;
     turn?: number;
+    /** "partner" means the detectives were talking to each other about the
+     *  learner rather than to them - rendered differently so they can see it. */
+    addressedTo?: string;
+    /** Groups the two halves of an aside. */
+    exchangeId?: string;
 }
 
-export default function InterrogationRoom() {
+interface Props {
+    interviewId: string;
+    /** Resuming an existing interview replays its transcript instead of
+     *  opening with the standard first line. */
+    resume: boolean;
+    onExit: () => void;
+}
+
+export default function InterrogationRoom({ interviewId, resume, onExit }: Props) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isListening, setIsListening] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
@@ -22,59 +49,84 @@ export default function InterrogationRoom() {
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
-    const [currentPhase, setCurrentPhase] = useState("ORIENTATION");
+    const [currentPhase, setCurrentPhase] = useState("engage");
     const [hasStarted, setHasStarted] = useState(false);
+    const [briefed, setBriefed] = useState(false);
+    const [outcome, setOutcome] = useState<string | null>(null);
+    // Set from the outcome card's "Read the transcript" button. A concluded
+    // interview must be re-readable (the picker offers "Review"); without this
+    // the outcome card shadowed the loaded transcript and it was unreachable.
+    const [reviewing, setReviewing] = useState(false);
     const speechManager = useRef<SpeechManager | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const silenceTimer = useRef<NodeJS.Timeout | null>(null);
-    const sessionId = useRef(`session-${Date.now()}`);
+    // True while the learner is actually speaking. A ref rather than state so
+    // the silence timer reads it without needing to be re-created.
+    const speechActive = useRef(false);
 
-    const handleSendMessageRef = useRef<(text?: string) => Promise<void>>(async () => { });
+    const handleSendMessageRef = useRef<(text?: string, modality?: Modality) => Promise<void>>(async () => { });
 
     // Fetch TTS audio from backend and play it via streaming
     // onStart fires when audio actually begins playing (for syncing text reveal)
-    const playAgentAudio = useCallback(async (text: string, agentName: string, onEnd?: () => void, onStart?: () => void) => {
-        try {
-            setIsSpeaking(true);
-            const response = await fetch(`${BACKEND_URL}/tts`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, voice: agentName }),
-            });
-
-            if (!response.ok) {
-                console.warn("TTS endpoint returned", response.status, "- skipping audio");
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
-                return;
-            }
-
-            // If user started recording while TTS was loading, don't play over them
-            if (speechManager.current?.isListening) {
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
-                return;
-            }
-
-            if (speechManager.current) {
-                await speechManager.current.playStreamingAudio(response, () => {
-                    setIsSpeaking(false);
-                    if (onEnd) onEnd();
-                }, () => {
-                    if (onStart) onStart();
-                });
-            } else {
-                setIsSpeaking(false);
-                if (onStart) onStart();
-                if (onEnd) onEnd();
-            }
-        } catch (error) {
-            console.error("TTS fetch error:", error);
+    const playAgentAudio = useCallback(async (
+        segments: { text: string; voice: string }[],
+        onEnd?: () => void, onStart?: () => void,
+    ) => {
+        // Every route out of here without audio now says which one it took. A
+        // line appearing in silence looks identical whether the sidecar is down,
+        // the backend is unreachable or playback was skipped on purpose - the
+        // same ambiguity the microphone had until it was made to explain itself.
+        // `tellThem` is false for the one case that is not a fault.
+        const noAudio = (why: string, tellThem = true) => {
+            console.warn(`[tts] ${why}`);
+            if (tellThem) setErrorMsg(TTS_SILENT);
             setIsSpeaking(false);
             if (onStart) onStart();
             if (onEnd) onEnd();
+        };
+
+        try {
+            setIsSpeaking(true);
+            // An aside is two speakers. The backend renders them into a single
+            // wav, so playback here is identical to a single line - no
+            // sequencing, and the halves cannot arrive out of order.
+            const response = await apiFetch('/tts', {
+                method: 'POST',
+                body: JSON.stringify(
+                    segments.length > 1
+                        ? { segments }
+                        : { text: segments[0]?.text ?? '', voice: segments[0]?.voice ?? 'Reynolds' }),
+            });
+
+            if (!response.ok) {
+                // 502 here is almost always the Kokoro sidecar being down rather
+                // than anything wrong with the request.
+                return noAudio(`backend returned ${response.status} for this line`
+                    + (response.status === 502 ? ' - is the TTS sidecar on 7678 up?' : ''));
+            }
+
+            // Not a fault: they started talking while it was loading, and talking
+            // over them is worse than staying quiet.
+            if (speechManager.current?.isListening) {
+                return noAudio('learner began speaking while audio loaded - skipped deliberately',
+                               false);
+            }
+
+            if (!speechManager.current) {
+                return noAudio('no speech manager on this component - nothing can play');
+            }
+
+            // Audio is flowing again. Clear only our own message, so a microphone
+            // warning sharing this slot is not silently wiped.
+            setErrorMsg(prev => (prev === TTS_SILENT ? null : prev));
+            await speechManager.current.playStreamingAudio(response, () => {
+                setIsSpeaking(false);
+                if (onEnd) onEnd();
+            }, () => {
+                if (onStart) onStart();
+            });
+        } catch (error) {
+            noAudio(`could not reach /tts: ${error}`);
         }
     }, []);
 
@@ -87,8 +139,16 @@ export default function InterrogationRoom() {
     const resetSilenceTimer = useCallback(() => {
         if (silenceTimer.current) clearTimeout(silenceTimer.current);
 
-        if (isListening) {
-            const delay = 12000 + Math.random() * 8000;
+        // Never arm it while they are mid-sentence. An open microphone is not
+        // the same as a silent room, and prompting over someone who is talking
+        // discards what they said and answers as though they had said nothing.
+        if (isListening && !speechActive.current) {
+            // 4-8s. The research puts the point where silence starts to bite at
+            // about four seconds, and the project's own design doc specifies
+            // random(4,8). The previous 12-20s left a learner floundering in
+            // dead air for the better part of twenty seconds before anyone
+            // helped, which reads as abandonment rather than pressure.
+            const delay = 4000 + Math.random() * 4000;
             silenceTimer.current = setTimeout(() => {
                 handleSilenceTrigger();
             }, delay);
@@ -97,6 +157,9 @@ export default function InterrogationRoom() {
 
     const handleSilenceTrigger = async () => {
         if (inputText.length > 0) return;
+        // Last line of defence: they started talking between the timer being
+        // armed and it firing.
+        if (speechActive.current) return;
 
         try {
             if (speechManager.current && isListening) {
@@ -105,40 +168,51 @@ export default function InterrogationRoom() {
 
             setIsWaiting(true);
 
-            const response = await fetch(`${BACKEND_URL}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: "[SILENCE]",
-                    session_id: sessionId.current
-                }),
-            });
-
-            if (!response.ok) throw new Error('Network response was not ok');
-            const data = await response.json();
-
-            if (data.phase) setCurrentPhase(data.phase);
-
-            const agentMsg: Message = {
-                role: 'agent',
-                content: data.response || data.text,
-                agentName: data.agent,
-                emotion: data.emotion,
-                phase: data.phase,
-                turn: data.turn
-            };
-
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
-                setMessages(prev => [...prev, agentMsg]);
-                setIsWaiting(false);
-            });
+            // Logged as 'silence' rather than a learner utterance so the
+            // post-session assessment does not read it as production.
+            const data = await sendMessage(interviewId, "[SILENCE]", 'silence');
+            receive(data.utterances, data.phase, data.turn, data.outcome ?? null,
+                    autoStartMic);
         } catch (error) {
             console.error("Error sending silence trigger:", error);
             setIsWaiting(false);
         }
     };
 
-    const handleSendMessage = async (textOverride?: string) => {
+    /** Show and speak a reply, which is one utterance or - for an aside - two. */
+    const receive = (
+        utterances: Utterance[], phase: string, turn: number,
+        newOutcome: string | null, onEnd?: () => void,
+    ) => {
+        // A reply arrived, so the connection is back. Clear only that error - a
+        // TTS warning is settled below by playAgentAudio, by its own source.
+        setErrorMsg(prev => (prev === CONNECTION_FAILED ? null : prev));
+        if (phase) setCurrentPhase(phase);
+
+        const exchangeId = utterances.length > 1 ? `x-${Date.now()}` : undefined;
+        const msgs: Message[] = utterances.map(u => ({
+            role: 'agent',
+            content: u.text,
+            agentName: u.speaker,
+            emotion: u.emotion ?? undefined,
+            phase, turn,
+            addressedTo: u.addressed_to,
+            exchangeId,
+        }));
+
+        const segments = utterances.map(u => ({ text: u.text, voice: u.speaker }));
+
+        // Hold the text until audio starts, so eyes and ears stay together.
+        playAgentAudio(segments, () => {
+            if (newOutcome) setOutcome(newOutcome);
+            if (onEnd && !newOutcome) onEnd();
+        }, () => {
+            setMessages(prev => [...prev, ...msgs]);
+            setIsWaiting(false);
+        });
+    };
+
+    const handleSendMessage = async (textOverride?: string, modality: Modality = 'typed') => {
         const textToSend = textOverride || inputText;
         if (!textToSend.trim()) return;
 
@@ -154,39 +228,13 @@ export default function InterrogationRoom() {
         setIsWaiting(true);
 
         try {
-            const response = await fetch(`${BACKEND_URL}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: textToSend,
-                    session_id: sessionId.current
-                }),
-            });
-
-            if (!response.ok) throw new Error('Network response was not ok');
-            const data = await response.json();
-
-            if (data.phase) setCurrentPhase(data.phase);
-
-            const agentMsg: Message = {
-                role: 'agent',
-                content: data.response || data.text,
-                agentName: data.agent,
-                emotion: data.emotion,
-                phase: data.phase,
-                turn: data.turn
-            };
-
-            // Hold text until audio starts playing — keeps eyes and ears in sync
-            playAgentAudio(agentMsg.content, data.agent, autoStartMic, () => {
-                setMessages(prev => [...prev, agentMsg]);
-                setIsWaiting(false);
-            });
-
+            const data = await sendMessage(interviewId, textToSend, modality);
+            receive(data.utterances, data.phase, data.turn, data.outcome ?? null,
+                    autoStartMic);
         } catch (error) {
             console.error("Error sending message:", error);
             setIsWaiting(false);
-            setErrorMsg("Connection to server failed. Is the backend running?");
+            setErrorMsg(CONNECTION_FAILED);
         }
     };
 
@@ -199,10 +247,18 @@ export default function InterrogationRoom() {
             // onResult — Whisper transcription complete, auto-send
             (text) => {
                 setInputText("");
-                setErrorMsg(null);
+                // A good transcription proves the mic and STT work - and nothing
+                // else. Clear only mic/STT-domain warnings; leave a TTS or network
+                // error (which share this one slot) standing, since they are still
+                // true. Clearing them blanket here made a real fault vanish behind
+                // a successful bit of speech.
+                setErrorMsg(prev =>
+                    (prev === TTS_SILENT || prev === CONNECTION_FAILED) ? prev : null);
                 resetSilenceTimer();
                 if (text.trim().length > 0) {
-                    handleSendMessageRef.current(text);
+                    // Came back from Whisper, so this turn was spoken. That
+                    // distinction is what earns speaking credit later.
+                    handleSendMessageRef.current(text, 'spoken');
                 }
             },
             // onError
@@ -221,6 +277,16 @@ export default function InterrogationRoom() {
             // onTranscribing — Whisper is processing
             (transcribing) => {
                 setIsTranscribing(transcribing);
+            },
+            // onSpeechActivity — they have started or stopped talking.
+            // Starting cancels any pending silence prompt outright; a learner
+            // who is mid-sentence must never be talked over.
+            (active) => {
+                speechActive.current = active;
+                if (active && silenceTimer.current) {
+                    clearTimeout(silenceTimer.current);
+                    silenceTimer.current = null;
+                }
             }
         );
 
@@ -233,25 +299,64 @@ export default function InterrogationRoom() {
         };
     }, []);
 
-    // Start the interview after user clicks — this unlocks audio in the browser
-    const startInterview = useCallback(() => {
-        setHasStarted(true);
-
+    /** The detectives' opening line. Deferred until after the briefing, so the
+     *  learner is not read their brief and questioned in the same breath.
+     *  Shown live here for a new interview; the backend persists the SAME text as
+     *  Turn 0 at creation (prompts.OPENING_LINE) so a resume replays it. Keep the
+     *  two strings identical. */
+    const beginInterrogation = useCallback(() => {
+        setBriefed(true);
         const openingMsg: Message = {
             role: 'agent',
             content: "Have a seat. State your full name for the record, please.",
             agentName: 'Reynolds',
-            emotion: 'measured'
+            emotion: 'measured',
         };
         setIsWaiting(true);
-
         setTimeout(() => {
-            playAgentAudio(openingMsg.content, 'Reynolds', undefined, () => {
+            playAgentAudio([{ text: openingMsg.content, voice: 'Reynolds' }], undefined, () => {
                 setMessages([openingMsg]);
                 setIsWaiting(false);
             });
         }, 300);
     }, [playAgentAudio]);
+
+    // Start the interview after user clicks — this unlocks audio in the browser
+    const startInterview = useCallback(async () => {
+        setHasStarted(true);
+
+        if (resume) {
+            // Set BEFORE the await. Otherwise the briefing screen mounts during
+            // the transcript load and starts reading the brief aloud over the
+            // top of the detective.
+            setBriefed(true);
+
+            // Replay what was already said rather than reopening. No audio:
+            // the learner is picking up a thread, not being greeted again.
+            setIsWaiting(true);
+            try {
+                const detail = await getInterview(interviewId);
+                setMessages(detail.turns.map((t) => ({
+                    role: t.role === 'user' ? 'user' : 'agent',
+                    content: t.text,
+                    agentName: t.agent_name ?? undefined,
+                    emotion: t.emotion ?? undefined,
+                    phase: t.phase ?? undefined,
+                    addressedTo: t.addressed_to ?? 'learner',
+                    exchangeId: t.exchange_id ?? undefined,
+                })));
+                if (detail.phase) setCurrentPhase(detail.phase);
+                if (detail.outcome) setOutcome(detail.outcome);
+            } catch {
+                setErrorMsg("Could not load this interview.");
+            } finally {
+                setIsWaiting(false);
+            }
+            return;
+        }
+        // A new interview goes to the briefing screen; beginInterrogation()
+        // runs when they say they are ready.
+    }, [resume, interviewId]);
 
     useEffect(() => {
         resetSilenceTimer();
@@ -344,11 +449,93 @@ export default function InterrogationRoom() {
                             color: 'var(--teal)',
                         }}
                     >
-                        Begin Interview
+                        {resume ? 'Resume Interview' : 'Begin Interview'}
                     </button>
                     <p className="text-xs font-mono mt-4" style={{ color: 'var(--text-muted)' }}>
                         Click to enable audio and microphone
                     </p>
+                    <button
+                        onClick={onExit}
+                        className="block mx-auto text-xs font-mono mt-2"
+                        style={{ color: 'var(--text-muted)' }}
+                    >
+                        ← Back to interviews
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // Read them their brief first, with nothing else happening. Previously this
+    // appeared at the same moment the first question did, so there was no chance
+    // to take it in.
+    if (!briefed) {
+        return <BriefingScreen interviewId={interviewId} onReady={beginInterrogation} />;
+    }
+
+    // The interview has concluded. Show the verdict card first; "Read the
+    // transcript" drops through to the normal view (with the outcome as a banner
+    // and no input) so a finished interview can actually be re-read.
+    if (outcome && !reviewing) {
+        const copy: Record<string, { title: string; line: string; colour: string }> = {
+            released: {
+                title: 'Released',
+                line: 'Your account held. You are free to go, with thanks for your time.',
+                colour: 'var(--teal)',
+            },
+            under_investigation: {
+                title: 'Released under investigation',
+                line: 'You are free to go for now. Enquiries are continuing, and they will want to speak to you again.',
+                colour: 'var(--amber)',
+            },
+            detained: {
+                title: 'Detained',
+                line: 'Your account did not survive what they had. You are not going home tonight.',
+                colour: 'var(--red-accent)',
+            },
+        };
+        const o = copy[outcome] ?? copy.under_investigation;
+        return (
+            <div className="flex flex-col h-screen items-center justify-center px-6"
+                style={{ background: 'var(--background)', color: 'var(--text-primary)' }}>
+                <div className="scanline-overlay" />
+                <div className="text-center max-w-md space-y-4">
+                    <p className="text-xs font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--text-muted)' }}>
+                        Interview concluded
+                    </p>
+                    <h1 className="text-lg font-bold tracking-widest font-mono uppercase"
+                        style={{ color: o.colour }}>
+                        {o.title}
+                    </h1>
+                    <p className="text-sm font-mono leading-relaxed"
+                        style={{ color: 'var(--text-secondary)' }}>
+                        {o.line}
+                    </p>
+                    <div className="flex items-center justify-center gap-3 mt-6">
+                        <button
+                            onClick={() => setReviewing(true)}
+                            className="px-6 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                            style={{
+                                background: 'var(--surface-raised)',
+                                border: '1px solid var(--border-bright)',
+                                color: 'var(--text-secondary)',
+                            }}
+                        >
+                            Read the transcript
+                        </button>
+                        <button
+                            onClick={onExit}
+                            className="px-6 py-3 rounded-lg font-bold text-sm tracking-wider font-mono uppercase"
+                            style={{
+                                background: 'var(--surface-raised)',
+                                border: '1px solid var(--border-bright)',
+                                color: 'var(--text-secondary)',
+                            }}
+                        >
+                            Back to interviews
+                        </button>
+                    </div>
                 </div>
             </div>
         );
@@ -368,6 +555,14 @@ export default function InterrogationRoom() {
                 }}
             >
                 <div className="flex items-center gap-4">
+                    <button
+                        onClick={onExit}
+                        title="Back to interviews — this interview is saved"
+                        className="text-xs font-mono px-2 py-1 rounded"
+                        style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                    >
+                        ←
+                    </button>
                     <h1
                         className="text-sm font-bold tracking-widest font-mono uppercase"
                         style={{ color: 'var(--teal)' }}
@@ -390,7 +585,7 @@ export default function InterrogationRoom() {
                             border: '1px solid var(--amber-dim)'
                         }}
                     >
-                        {currentPhase}
+                        {currentPhase.replace(/_/g, ' ').toUpperCase()}
                     </span>
                     <div className="flex items-center gap-1.5">
                         <span
@@ -403,6 +598,30 @@ export default function InterrogationRoom() {
                     </div>
                 </div>
             </div>
+
+            {/* The learner's own brief, within reach throughout */}
+            <BriefPanel interviewId={interviewId} />
+
+            {/* Reviewing a concluded interview: the verdict as a banner over the
+                transcript, which stays fully readable below. */}
+            {outcome && (
+                <div className="px-5 py-2 flex items-center justify-between gap-3"
+                    style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+                    <span className="text-xs font-mono uppercase tracking-widest"
+                        style={{
+                            color: outcome === 'released' ? 'var(--teal)'
+                                : outcome === 'detained' ? 'var(--red-accent)' : 'var(--amber)',
+                        }}>
+                        Concluded · {outcome.replace(/_/g, ' ')}
+                    </span>
+                    <button
+                        onClick={onExit}
+                        className="text-xs font-mono px-2 py-1 rounded"
+                        style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                        Back to interviews
+                    </button>
+                </div>
+            )}
 
             {/* Chat Area */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
@@ -421,8 +640,14 @@ export default function InterrogationRoom() {
                             </div>
                         ) : (
                             <div
-                                className="max-w-2xl px-4 py-3 rounded-lg rounded-bl-none"
-                                style={{
+                                className={`max-w-2xl px-4 py-3 rounded-lg ${msg.addressedTo === 'partner' ? 'ml-8' : 'rounded-bl-none'}`}
+                                style={msg.addressedTo === 'partner' ? {
+                                    // They are being talked ABOUT, not to. Recessed and
+                                    // dashed so it reads as overheard across the table.
+                                    background: 'transparent',
+                                    border: '1px dashed var(--border-bright)',
+                                    opacity: 0.85,
+                                } : {
                                     background: 'var(--surface)',
                                     borderLeft: `3px solid ${getAgentBorderColor(msg.agentName)}`,
                                     borderTop: '1px solid var(--border)',
@@ -438,7 +663,13 @@ export default function InterrogationRoom() {
                                         >
                                             {msg.agentName === 'Reynolds' ? 'DI Reynolds' : msg.agentName === 'Chen' ? 'DS Chen' : msg.agentName}
                                         </span>
-                                        {msg.emotion && (
+                                        {msg.addressedTo === 'partner' && (
+                                            <span className="text-xs font-mono italic"
+                                                style={{ color: 'var(--text-muted)' }}>
+                                                — not to you —
+                                            </span>
+                                        )}
+                                        {msg.emotion && msg.addressedTo !== 'partner' && (
                                             <span
                                                 className="text-xs font-mono"
                                                 style={{ color: 'var(--text-muted)' }}
@@ -449,7 +680,7 @@ export default function InterrogationRoom() {
                                     </div>
                                     <button
                                         onClick={() => {
-                                            playAgentAudio(msg.content, msg.agentName || 'Reynolds');
+                                            playAgentAudio([{ text: msg.content, voice: msg.agentName || 'Reynolds' }]);
                                         }}
                                         className="text-xs px-2 py-0.5 rounded transition-colors font-mono"
                                         style={{
@@ -462,7 +693,12 @@ export default function InterrogationRoom() {
                                         PLAY
                                     </button>
                                 </div>
-                                <p className="text-base leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                                <p className="text-base leading-relaxed"
+                                    style={{
+                                        color: msg.addressedTo === 'partner'
+                                            ? 'var(--text-secondary)' : 'var(--text-primary)',
+                                        fontStyle: msg.addressedTo === 'partner' ? 'italic' : 'normal',
+                                    }}>
                                     {msg.content}
                                 </p>
                             </div>
@@ -492,7 +728,9 @@ export default function InterrogationRoom() {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
+            {/* Input Area - hidden once the interview has concluded; a finished
+                interview is read-only, and a send would 409. */}
+            {!outcome && (
             <div
                 className="px-5 py-3"
                 style={{
@@ -556,6 +794,7 @@ export default function InterrogationRoom() {
                     </button>
                 </div>
             </div>
+            )}
         </div>
     );
 }

@@ -1,10 +1,57 @@
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
+import { apiFetch } from './api';
+
+// Speech-end tuning, taken from SAIF's hands-free tutor surface, which has been
+// through many iterations and fires reliably.
+//
+// The previous 500ms ended a learner's answer after half a second of pause.
+// Someone reaching for a word in a second language pauses far longer than that,
+// so extended answers were being cut off mid-sentence - the single most
+// damaging failure available here, because it punishes exactly the production
+// the app exists to elicit.
+//
+// SAIF's note on why this is generous: "so a mid-sentence pause to find a word
+// isn't cut off. The 'finished' timer only starts once speech has been heard,
+// so a learner who pauses to think BEFORE answering is never cut off." Silero's
+// redemption window has the same semantics - it only runs after speech - so a
+// long silence before they begin costs them nothing.
+const SILENCE_MS = 2500;
+
+// Backstop against a stuck mic in a noisy room, where the detector may never see
+// silence. Timed from the moment SPEECH starts, not from the mic opening, so
+// thinking time before answering is never counted.
+//
+// Two things about this cap, both learned the hard way:
+//
+//   * It SUBMITS what was captured (submitUserSpeechOnPause below) rather than
+//     discarding it. The first version binned the utterance, on the belief that
+//     Silero could not flush speech in progress - untrue since vad-web grew
+//     submitUserSpeechOnPause, and the cost of believing it was a learner's
+//     entire free-recall account, a minute of second-language production,
+//     silently thrown away at the exact moment the app had asked for it.
+//
+//   * Sixty seconds was too tight. Free recall is DESIGNED to elicit minutes of
+//     continuous narration, and an L2 speaker working hard does not reliably
+//     leave a 2.5s gap inside a minute. The cap exists for the mic that will
+//     never see silence, not for a learner in full flow - and now that firing
+//     submits rather than destroys, it can afford to be generous.
+const MAX_SPEECH_MS = 120000;
 
 export class SpeechManager {
     private vad: any = null;
     private micStream: MediaStream | null = null;
     private vadReady: Promise<void> | null = null;
     private currentAudio: HTMLAudioElement | null = null;
+    private maxListenTimer: ReturnType<typeof setTimeout> | null = null;
+    private speechStartedAt: number = 0;
+    // Completion for whatever is playing right now: revoke its blob URL and run
+    // its pending onEnd, exactly once. stopAudio() calls it so an interrupted
+    // line still runs its "after this line" logic (setting the outcome, arming
+    // the mic) instead of dropping it, and does not leak the audio blob.
+    private currentAudioCleanup: (() => void) | null = null;
+    // Set on destroy(). With submitUserSpeechOnPause, tearing down mid-speech
+    // would otherwise flush the segment through onSpeechEnd and SEND a message
+    // from a component that no longer exists.
+    private destroyed: boolean = false;
     isListening: boolean = false;
     isTranscribing: boolean = false;
 
@@ -12,17 +59,24 @@ export class SpeechManager {
     onError?: (error: string) => void;
     onListeningChange?: (listening: boolean) => void;
     onTranscribing?: (transcribing: boolean) => void;
+    /** Fires true the moment speech is detected and false when it ends.
+     *  The silence prompt needs this: "the mic is open" and "nobody is talking"
+     *  are different things, and interrupting someone mid-sentence because a
+     *  timer started when the mic opened is the worst thing this app can do. */
+    onSpeechActivity?: (active: boolean) => void;
 
     constructor(
         onResult: (text: string) => void,
         onError?: (error: string) => void,
         onListeningChange?: (listening: boolean) => void,
-        onTranscribing?: (transcribing: boolean) => void
+        onTranscribing?: (transcribing: boolean) => void,
+        onSpeechActivity?: (active: boolean) => void
     ) {
         this.onResult = onResult;
         this.onError = onError;
         this.onListeningChange = onListeningChange;
         this.onTranscribing = onTranscribing;
+        this.onSpeechActivity = onSpeechActivity;
     }
 
     // Cached MicVAD constructor — loaded lazily on first use.
@@ -60,8 +114,14 @@ export class SpeechManager {
             positiveSpeechThreshold: 0.5,
             negativeSpeechThreshold: 0.35,
             minSpeechMs: 250,
-            redemptionMs: 500,
+            redemptionMs: SILENCE_MS,
             preSpeechPadMs: 300,
+            // Anything that pauses the mic mid-speech - the runaway cap, the
+            // MIC button - submits the audio captured so far instead of
+            // discarding it. A learner who presses stop while talking means
+            // "I'm done, send it", and the cap firing must never again cost
+            // them what they said.
+            submitUserSpeechOnPause: true,
             // Assets served from public/ (copied by prebuild script).
             workletURL: '/vad.worklet.bundle.min.js',
             modelURL: '/silero_vad_legacy.onnx',
@@ -71,8 +131,33 @@ export class SpeechManager {
                 ort.env.wasm.wasmPaths = '/';
                 ort.env.wasm.numThreads = 1;
             },
+            // The runaway guard is armed when speech actually begins, so a
+            // learner can take as long as they need to gather their thoughts
+            // before saying anything.
+            onSpeechStart: () => {
+                this.speechStartedAt = Date.now();
+                console.info('[mic] speech started');
+                this.armSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(true);
+            },
             onSpeechEnd: (audio: Float32Array) => {
+                const heldMs = Date.now() - (this.speechStartedAt || Date.now());
+                console.info(`[mic] speech ended after ${heldMs}ms, ${audio.length} samples`);
+                this.clearSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(false);
                 this.handleSpeechEnd(audio);
+            },
+            // The VAD decided the speech was too short to be real and threw the
+            // audio away. Without this handler that happens silently, and the
+            // learner sees a recording light, no transcript, and detectives
+            // carrying on as though they had said nothing.
+            onVADMisfire: () => {
+                const heldMs = Date.now() - (this.speechStartedAt || Date.now());
+                console.warn(`[mic] VAD MISFIRE - audio discarded after ${heldMs}ms `
+                    + `(shorter than minSpeechMs). Nothing was sent.`);
+                this.clearSpeechCap();
+                if (this.onSpeechActivity) this.onSpeechActivity(false);
+                if (this.onError) this.onError("Didn't catch that — try again, a little longer.");
             },
         });
     }
@@ -90,8 +175,24 @@ export class SpeechManager {
             // the MediaStream was already acquired above.
             if (!this.vad) {
                 if (!this.vadReady) this.vadReady = this._initVAD();
-                await this.vadReady;
-                this.vadReady = null;
+                try {
+                    await this.vadReady;
+                } finally {
+                    // Clear in a finally, not after the await. A rejected init
+                    // used to leave the rejected promise cached here forever, so
+                    // every later MIC click re-awaited the same rejection and the
+                    // mic was dead for the whole session - the message told them
+                    // to try again, and trying again could never work.
+                    this.vadReady = null;
+                }
+            }
+
+            // Unmounted while we were awaiting init: do not bring a hot audio
+            // pipeline up behind a screen that is gone. destroy() already tore
+            // down what it could see; finish the teardown of what init built.
+            if (this.destroyed) {
+                this.vad?.pause?.();
+                return;
             }
 
             this.vad.start();
@@ -112,7 +213,30 @@ export class SpeechManager {
         }
     }
 
+    private armSpeechCap() {
+        this.clearSpeechCap();
+        this.maxListenTimer = setTimeout(() => {
+            if (!this.isListening) return;
+            console.warn('[mic] speech ran past the safety cap - submitting what was captured.');
+            // stopListening() -> vad.pause() -> submitUserSpeechOnPause fires
+            // onSpeechEnd with everything said so far, which transcribes and
+            // sends as normal. The message describes that, not a loss.
+            this.stopListening();
+            if (this.onError) {
+                this.onError('That was a long stretch of talking — sending what you said so far.');
+            }
+        }, MAX_SPEECH_MS);
+    }
+
+    private clearSpeechCap() {
+        if (this.maxListenTimer) {
+            clearTimeout(this.maxListenTimer);
+            this.maxListenTimer = null;
+        }
+    }
+
     stopListening() {
+        this.clearSpeechCap();
         if (!this.isListening) return;
         this.isListening = false;
         if (this.onListeningChange) this.onListeningChange(false);
@@ -122,13 +246,20 @@ export class SpeechManager {
     }
 
     private async handleSpeechEnd(audio: Float32Array) {
+        // The flush arriving from destroy()'s pause. The room is gone - do not
+        // transcribe, and above all do not send.
+        if (this.destroyed) return;
         // Pause VAD immediately to prevent double-triggering during transcription
         this.vad?.pause();
         this.isListening = false;
         if (this.onListeningChange) this.onListeningChange(false);
 
-        // Skip very short audio (< 100ms at 16kHz = noise)
-        if (audio.length < 1600) return;
+        // Skip very short audio (< 100ms at 16kHz = noise). Logged, because a
+        // silent drop here is indistinguishable to the learner from a broken mic.
+        if (audio.length < 1600) {
+            console.warn(`[mic] discarded ${audio.length} samples as too short to be speech`);
+            return;
+        }
 
         this.isTranscribing = true;
         if (this.onTranscribing) this.onTranscribing(true);
@@ -138,19 +269,30 @@ export class SpeechManager {
             const formData = new FormData();
             formData.append('audio', wavBlob, 'recording.wav');
 
-            const response = await fetch(`${BACKEND_URL}/stt`, {
-                method: 'POST',
-                body: formData,
-            });
+            // apiFetch attaches the bearer token and leaves the FormData
+            // Content-Type (multipart boundary) to the browser.
+            const response = await apiFetch('/stt', { method: 'POST', body: formData });
 
             if (!response.ok) {
                 throw new Error(`STT returned ${response.status}`);
             }
 
             const data = await response.json();
+            console.info(`[mic] transcript: ${JSON.stringify(data.text ?? '')}`);
+
+            // Re-check AFTER the await: destroy() may have run while the STT
+            // request was in flight. Firing onResult now would send a full chat
+            // turn for a room the learner already left - the backend would record
+            // it and reply into nothing. The entry check alone cannot catch this.
+            if (this.destroyed) return;
 
             if (data.text && data.text.trim()) {
                 this.onResult(data.text.trim());
+            } else {
+                // Whisper heard nothing usable. Say so rather than leaving them
+                // staring at a recording light that produced no result.
+                console.warn('[mic] STT returned an empty transcript');
+                if (this.onError) this.onError("Didn't catch that — try again.");
             }
         } catch (error) {
             console.error('Transcription error:', error);
@@ -164,18 +306,29 @@ export class SpeechManager {
     }
 
     stopAudio() {
+        const cleanup = this.currentAudioCleanup;
+        this.currentAudioCleanup = null;
         if (this.currentAudio) {
+            this.currentAudio.onended = null;   // finish runs via cleanup, not ended
             this.currentAudio.pause();
-            this.currentAudio.currentTime = 0;
             this.currentAudio = null;
         }
+        if (cleanup) cleanup();                 // revoke blob + fire pending onEnd, once
     }
 
-    playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
-        this.stopAudio();
-
-        const url = URL.createObjectURL(audioBlob);
-        const audio = new Audio(url);
+    /** Wire the shared playback lifecycle onto an <audio> element: the single
+     *  completion path (`finish` — revoke the URL and run onEnd, at most once, by
+     *  natural end / error / stopAudio interrupt), the play-started signal, the
+     *  error handlers, and a `play()` the caller invokes last. Extracted from
+     *  playAudio and playStreamingAudio, which each carried their own copy.
+     *  `revoke` frees whatever object URL the caller made (blob vs MediaSource);
+     *  fireStart/finish are returned so the streaming reader can signal from
+     *  inside its sourceopen handler. onEnd is skipped once the manager is
+     *  destroyed — a dead component must not be handed a React state setter. */
+    private attachPlayback(
+        audio: HTMLAudioElement, revoke: () => void,
+        onEnd?: () => void, onStart?: () => void,
+    ): { fireStart: () => void; finish: () => void; play: () => void } {
         this.currentAudio = audio;
 
         let started = false;
@@ -185,53 +338,64 @@ export class SpeechManager {
             if (onStart) onStart();
         };
 
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            revoke();
+            if (this.currentAudio === audio) this.currentAudio = null;
+            this.currentAudioCleanup = null;
+            if (onEnd && !this.destroyed) onEnd();
+        };
+        this.currentAudioCleanup = finish;
+
         audio.addEventListener('playing', fireStart, { once: true });
         audio.addEventListener('pause', fireStart, { once: true });
-
-        audio.onended = () => {
-            URL.revokeObjectURL(url);
-            this.currentAudio = null;
-            if (onEnd) onEnd();
-        };
+        audio.onended = finish;
 
         audio.onerror = (e) => {
             console.error("Audio playback error:", e);
-            URL.revokeObjectURL(url);
-            this.currentAudio = null;
             if (this.onError) this.onError("Audio playback failed");
             fireStart();
-            if (onEnd) onEnd();
+            finish();
         };
 
-        audio.play().catch((err) => {
+        const play = () => audio.play().catch((err) => {
             console.error("Audio play() rejected:", err);
             if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
             fireStart();
-            if (onEnd) onEnd();
+            finish();
         });
+
+        return { fireStart, finish, play };
+    }
+
+    playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
+        this.stopAudio();
+        const url = URL.createObjectURL(audioBlob);
+        const audio = new Audio(url);
+        const { play } = this.attachPlayback(
+            audio, () => URL.revokeObjectURL(url), onEnd, onStart);
+        play();
     }
 
     async playStreamingAudio(response: Response, onEnd?: () => void, onStart?: () => void) {
         this.stopAudio();
 
-        let started = false;
-        const fireStart = () => {
-            if (started) return;
-            started = true;
-            if (onStart) onStart();
-        };
-
-        const canStream = typeof MediaSource !== 'undefined'
+        // Only take the MediaSource path when the response really is MP3. The local
+        // Kokoro sidecar returns a complete audio/wav, which MediaSource cannot
+        // buffer — feeding WAV bytes into an audio/mpeg SourceBuffer just fails.
+        const contentType = response.headers.get('content-type') || '';
+        const canStream = contentType.includes('audio/mpeg')
+            && typeof MediaSource !== 'undefined'
             && MediaSource.isTypeSupported('audio/mpeg');
 
         if (canStream && response.body) {
             const mediaSource = new MediaSource();
             const audio = new Audio();
             audio.src = URL.createObjectURL(mediaSource);
-            this.currentAudio = audio;
-
-            audio.addEventListener('playing', fireStart, { once: true });
-            audio.addEventListener('pause', fireStart, { once: true });
+            const { fireStart, finish, play } = this.attachPlayback(
+                audio, () => URL.revokeObjectURL(audio.src), onEnd, onStart);
 
             mediaSource.addEventListener('sourceopen', async () => {
                 const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
@@ -264,30 +428,11 @@ export class SpeechManager {
                 } catch (err) {
                     console.error('Stream read error:', err);
                     fireStart();
-                    if (onEnd) onEnd();
+                    finish();
                 }
             });
 
-            audio.onended = () => {
-                URL.revokeObjectURL(audio.src);
-                this.currentAudio = null;
-                if (onEnd) onEnd();
-            };
-
-            audio.onerror = (e) => {
-                console.error("Streaming audio error:", e);
-                URL.revokeObjectURL(audio.src);
-                this.currentAudio = null;
-                fireStart();
-                if (onEnd) onEnd();
-            };
-
-            audio.play().catch((err) => {
-                console.error("Audio play() rejected:", err);
-                if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
-                fireStart();
-                if (onEnd) onEnd();
-            });
+            play();
         } else {
             // Fallback: collect full response as blob, then play
             const blob = await response.blob();
@@ -296,6 +441,7 @@ export class SpeechManager {
     }
 
     destroy() {
+        this.destroyed = true;
         this.stopListening();
         this.stopAudio();
         if (this.vad) {
