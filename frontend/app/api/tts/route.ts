@@ -8,9 +8,16 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8013';
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
+
+        // /tts is authenticated on the backend now; carry the bearer token across
+        // the proxy hop the same way the generic [...path] proxy does.
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const auth = request.headers.get('authorization');
+        if (auth) headers['Authorization'] = auth;
+
         const response = await fetch(`${BACKEND_URL}/tts`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(body),
         });
 

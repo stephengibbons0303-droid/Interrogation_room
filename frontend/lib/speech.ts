@@ -1,4 +1,4 @@
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
+import { apiFetch } from './api';
 
 // Speech-end tuning, taken from SAIF's hands-free tutor surface, which has been
 // through many iterations and fires reliably.
@@ -269,10 +269,9 @@ export class SpeechManager {
             const formData = new FormData();
             formData.append('audio', wavBlob, 'recording.wav');
 
-            const response = await fetch(`${BACKEND_URL}/stt`, {
-                method: 'POST',
-                body: formData,
-            });
+            // apiFetch attaches the bearer token and leaves the FormData
+            // Content-Type (multipart boundary) to the browser.
+            const response = await apiFetch('/stt', { method: 'POST', body: formData });
 
             if (!response.ok) {
                 throw new Error(`STT returned ${response.status}`);
@@ -317,11 +316,19 @@ export class SpeechManager {
         if (cleanup) cleanup();                 // revoke blob + fire pending onEnd, once
     }
 
-    playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
-        this.stopAudio();
-
-        const url = URL.createObjectURL(audioBlob);
-        const audio = new Audio(url);
+    /** Wire the shared playback lifecycle onto an <audio> element: the single
+     *  completion path (`finish` — revoke the URL and run onEnd, at most once, by
+     *  natural end / error / stopAudio interrupt), the play-started signal, the
+     *  error handlers, and a `play()` the caller invokes last. Extracted from
+     *  playAudio and playStreamingAudio, which each carried their own copy.
+     *  `revoke` frees whatever object URL the caller made (blob vs MediaSource);
+     *  fireStart/finish are returned so the streaming reader can signal from
+     *  inside its sourceopen handler. onEnd is skipped once the manager is
+     *  destroyed — a dead component must not be handed a React state setter. */
+    private attachPlayback(
+        audio: HTMLAudioElement, revoke: () => void,
+        onEnd?: () => void, onStart?: () => void,
+    ): { fireStart: () => void; finish: () => void; play: () => void } {
         this.currentAudio = audio;
 
         let started = false;
@@ -331,15 +338,11 @@ export class SpeechManager {
             if (onStart) onStart();
         };
 
-        // Single completion path, run at most once - by natural end, by error, or
-        // by stopAudio() interrupting. It always revokes the blob; it runs onEnd
-        // unless the whole manager has been destroyed (a dead component must not
-        // be handed a callback that sets React state).
         let finished = false;
         const finish = () => {
             if (finished) return;
             finished = true;
-            URL.revokeObjectURL(url);
+            revoke();
             if (this.currentAudio === audio) this.currentAudio = null;
             this.currentAudioCleanup = null;
             if (onEnd && !this.destroyed) onEnd();
@@ -357,23 +360,27 @@ export class SpeechManager {
             finish();
         };
 
-        audio.play().catch((err) => {
+        const play = () => audio.play().catch((err) => {
             console.error("Audio play() rejected:", err);
             if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
             fireStart();
             finish();
         });
+
+        return { fireStart, finish, play };
+    }
+
+    playAudio(audioBlob: Blob, onEnd?: () => void, onStart?: () => void) {
+        this.stopAudio();
+        const url = URL.createObjectURL(audioBlob);
+        const audio = new Audio(url);
+        const { play } = this.attachPlayback(
+            audio, () => URL.revokeObjectURL(url), onEnd, onStart);
+        play();
     }
 
     async playStreamingAudio(response: Response, onEnd?: () => void, onStart?: () => void) {
         this.stopAudio();
-
-        let started = false;
-        const fireStart = () => {
-            if (started) return;
-            started = true;
-            if (onStart) onStart();
-        };
 
         // Only take the MediaSource path when the response really is MP3. The local
         // Kokoro sidecar returns a complete audio/wav, which MediaSource cannot
@@ -387,21 +394,8 @@ export class SpeechManager {
             const mediaSource = new MediaSource();
             const audio = new Audio();
             audio.src = URL.createObjectURL(mediaSource);
-            this.currentAudio = audio;
-
-            let finished = false;
-            const finish = () => {
-                if (finished) return;
-                finished = true;
-                URL.revokeObjectURL(audio.src);
-                if (this.currentAudio === audio) this.currentAudio = null;
-                this.currentAudioCleanup = null;
-                if (onEnd && !this.destroyed) onEnd();
-            };
-            this.currentAudioCleanup = finish;
-
-            audio.addEventListener('playing', fireStart, { once: true });
-            audio.addEventListener('pause', fireStart, { once: true });
+            const { fireStart, finish, play } = this.attachPlayback(
+                audio, () => URL.revokeObjectURL(audio.src), onEnd, onStart);
 
             mediaSource.addEventListener('sourceopen', async () => {
                 const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
@@ -438,21 +432,7 @@ export class SpeechManager {
                 }
             });
 
-            audio.onended = finish;
-
-            audio.onerror = (e) => {
-                console.error("Streaming audio error:", e);
-                if (this.onError) this.onError("Audio playback failed");
-                fireStart();
-                finish();
-            };
-
-            audio.play().catch((err) => {
-                console.error("Audio play() rejected:", err);
-                if (this.onError) this.onError("Audio blocked by browser. Click anywhere first, then try again.");
-                fireStart();
-                finish();
-            });
+            play();
         } else {
             // Fallback: collect full response as blob, then play
             const blob = await response.blob();

@@ -11,9 +11,15 @@ export async function POST(request: NextRequest) {
         const contentType = request.headers.get('content-type') || '';
         const body = await request.arrayBuffer();
 
+        // /stt is authenticated on the backend now; carry the bearer token across
+        // the proxy hop the same way the generic [...path] proxy does.
+        const headers: Record<string, string> = { 'Content-Type': contentType };
+        const auth = request.headers.get('authorization');
+        if (auth) headers['Authorization'] = auth;
+
         const response = await fetch(`${BACKEND_URL}/stt`, {
             method: 'POST',
-            headers: { 'Content-Type': contentType },
+            headers,
             body: body,
         });
 

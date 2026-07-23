@@ -66,6 +66,13 @@ VERBAL STYLE:
 
 PROFILES = {"Reynolds": REYNOLDS_PROFILE, "Chen": CHEN_PROFILE}
 
+# The detectives' first line. Hard-coded rather than generated - turn 1 has no
+# account to build on. Persisted as the interview's first Turn at creation (see
+# sessions.create_interview) so a resumed transcript opens with the question the
+# learner was answering, not with their answer to an absent one. The frontend
+# shows this same text live for a new interview; keep the two identical.
+OPENING_LINE = "Have a seat. State your full name for the record, please."
+
 # How Chen plays it at each point on her arc. This is the trap being built.
 CHEN_STANCE_NOTES = {
     ChenStance.NEUTRAL.value:

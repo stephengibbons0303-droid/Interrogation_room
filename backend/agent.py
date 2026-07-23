@@ -8,6 +8,7 @@ Character material lives in prompts.py, techniques in engine/tactics.py. What
 remains here is the bit that talks to Azure.
 """
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -191,6 +192,24 @@ class TurnOut(BaseModel):
     claims: List[ClaimOut] = Field(default_factory=list)
 
 
+# A leading "[Reynolds]: " / "[Chen]: " label the model sometimes copies from its
+# own history. Turns are fed back as "[<agent>]: <text>" (see _context_messages),
+# and the model occasionally mimics that framing in the reply itself. Left in, the
+# label renders in the speech bubble AND is read aloud by TTS, then compounds when
+# the labelled line is fed back the next turn. RULES already forbids it; this is
+# the backstop for when the model does it anyway. Brackets are banned in a reply
+# outright (RULES rule 8), so any leading "[...]:" is a self-label artifact.
+_SELF_LABEL_RX = re.compile(r"^\s*\[[^\]\n]{1,40}\]:\s*")
+
+
+def _strip_self_label(text: str) -> str:
+    out, prev = (text or ""), None
+    while out != prev:                     # peel a stacked "[Reynolds]: [Reynolds]:" too
+        prev = out
+        out = _SELF_LABEL_RX.sub("", out, count=1)
+    return out.strip()
+
+
 def _validated_tactic(reported: Optional[str], options) -> str:
     """The tactic the model claims it used, constrained to one it was offered.
 
@@ -265,7 +284,14 @@ class InterrogationAgent:
             return self._mock(user_message)
 
         is_silence = user_message.strip() == "[SILENCE]"
-        self.history.append({"role": "user", "content": user_message})
+        # A [SILENCE] is not persisted as a user turn (sessions._persist_turn skips
+        # it), so it must not enter the live history either - otherwise a cached
+        # agent carries [SILENCE] rows the rehydrated one won't, and the two LLM
+        # contexts diverge the moment the agent is evicted and rebuilt from the DB.
+        # The model still learns of the silence: the system prompt says so
+        # explicitly below, and the detective's reaction persists as an agent turn.
+        if not is_silence:
+            self.history.append({"role": "user", "content": user_message})
 
         if not is_silence:
             self.state.turn += 1
@@ -285,13 +311,26 @@ class InterrogationAgent:
         # challenge question, and then it simply stopped - no closing exchange,
         # no sign-off, just an outcome screen. Deciding the stage first means a
         # closing turn is written as one.
-        dr.advance_stage(self.state, build_timeline(self.state.claims))
+        # Build the timeline once and share it: advance_stage and build_context
+        # both need it, over the same claims (ingest does not run until _apply).
+        report = build_timeline(self.state.claims)
+        dr.advance_stage(self.state, report)
 
-        ctx = dr.build_context(self.state, self.brief, prelim)
+        ctx = dr.build_context(self.state, self.brief, prelim, report=report)
         closing = Stage(self.state.stage) is Stage.CLOSURE
         speaker, reason = dr.select_speaker(ctx)
         options = dr.shortlist(ctx, speaker)
-        aside = any(t.two_voices for t in options[:1])
+        # An aside is a two-voice beat with a three-utterance contract (two
+        # detectives confer, then one turns back to the subject). Run one ONLY
+        # when the aside tactic is the strongest available play - and when it is
+        # not, drop it from the shortlist entirely. Offering it at position 2-3
+        # without imposing the contract let the model half-produce one: two
+        # partners conferring and no line back to the subject, leaving the learner
+        # with nothing to answer. Keyed to options[0] so the format we impose and
+        # the tactics we offer can never disagree.
+        aside = bool(options) and options[0].two_voices
+        if not aside:
+            options = [t for t in options if not t.two_voices] or options
         disclosure = dr.next_disclosure(self.state) if Stage(
             self.state.stage) is Stage.CHALLENGE else None
 
@@ -349,9 +388,13 @@ class InterrogationAgent:
                prelim, ctx, speaker: str, reason: str, disclosure,
                offered_premise=None, options=None) -> Dict[str, Any]:
         """Fold the model's reply back into engine state."""
+        # Strip any "[Name]:" label the model copied from its own fed-back history
+        # before anything downstream reads the text (bubble, TTS, re-feed).
+        for u in result.utterances:
+            u.text = _strip_self_label(u.text)
         # Up to three: an aside is two detectives conferring plus the one who
         # then turns back to the subject.
-        utterances = [u for u in result.utterances if (u.text or "").strip()][:3]
+        utterances = [u for u in result.utterances if u.text.strip()][:3]
         if not utterances:
             # A configured model returned no usable line. Same as a call failure:
             # do not persist a placeholder as a detective's turn.
@@ -408,7 +451,7 @@ class InterrogationAgent:
             chen_vouched_claim=result.chen_vouched_claim,
         )
         claims_before = len(self.state.claims)
-        new_contradictions = dr.ingest(self.state, extraction, final,
+        new_contradictions = dr.ingest(self.state, extraction,
                                        self.brief, self.state.turn)
 
         # Settle last turn's misquote against this reply - BEFORE arming a new

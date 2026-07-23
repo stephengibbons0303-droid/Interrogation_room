@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { getBrief, type Brief } from '../lib/api';
+import { concealmentStyle } from '../lib/concealment';
 
 /**
  * The learner's own brief, kept within reach for the whole interview.
@@ -50,19 +51,15 @@ export default function BriefPanel({ interviewId, defaultOpen = false }:
                     </p>
 
                     {brief.concealments.map((c, i) => {
-                        const denial = c.kind === 'denial';
+                        const s = concealmentStyle(c.kind);
                         return (
                             <p key={i} className="text-xs font-mono px-2 py-1 rounded leading-relaxed"
                                 style={{
-                                    color: denial ? 'var(--red-accent)' : 'var(--amber)',
-                                    background: denial
-                                        ? 'rgba(212, 54, 74, 0.08)'
-                                        : 'rgba(212, 160, 54, 0.08)',
-                                    border: `1px solid ${denial ? 'var(--red-accent)' : 'var(--amber)'}`,
+                                    color: s.accent,
+                                    background: s.background,
+                                    border: `1px solid ${s.accent}`,
                                 }}>
-                                <span className="uppercase tracking-widest">
-                                    {denial ? 'Do not admit' : 'You must be able to say'}
-                                </span>
+                                <span className="uppercase tracking-widest">{s.label}</span>
                                 <br />
                                 {c.text}
                             </p>

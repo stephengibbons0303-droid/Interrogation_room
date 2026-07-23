@@ -23,6 +23,37 @@ def fmt(minutes: int) -> str:
     return f"{h % 24:02d}:{m:02d}"
 
 
+def to_time(minutes: int) -> time:
+    """Minutes past midnight to a time, clamped to the evening's last minute.
+
+    Hour and minute both derive from the SAME clamped value. Clamping only the
+    hour term (and taking the minute raw) turned an after-midnight bound like 1440
+    into 23:00 instead of 23:59, shrinking or inverting the evidence window.
+    """
+    m = max(0, min(minutes, 23 * 60 + 59))
+    return time(m // 60, m % 60)
+
+
+def merge_spans(spans) -> List[list]:
+    """Merge overlapping or touching (start, end) intervals into a minimal set.
+
+    The single home for the interval merge that both coverage (build, below) and
+    director._covered_minutes were each doing by hand.
+    """
+    merged: List[list] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def overlap_minutes(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    """Minutes two spans share; negative when they are disjoint."""
+    return min(a_end, b_end) - max(a_start, b_start)
+
+
 WINDOW_START_MIN = to_min(WINDOW_START)
 WINDOW_END_MIN = to_min(WINDOW_END)
 WINDOW_MINUTES = WINDOW_END_MIN - WINDOW_START_MIN
@@ -171,12 +202,7 @@ def build(claims: List[Claim]) -> TimelineReport:
         clipped = _clip(c)
         if clipped:
             spans.append(clipped)
-    merged: List[list] = []
-    for start, end in sorted(spans):
-        if merged and start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
+    merged = merge_spans(spans)
     report.covered_minutes = sum(e - s for s, e in merged)
 
     # Gaps between the merged spans, plus the ends of the window.

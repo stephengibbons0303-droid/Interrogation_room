@@ -102,6 +102,21 @@ export function clearTokens() {
     window.localStorage.removeItem(REFRESH_KEY);
 }
 
+/** Raw-Response fetch through the same /api proxy, with the bearer token attached.
+ *  For endpoints whose bodies are not JSON — the audio /tts and /stt relays — which
+ *  the JSON `request()` helper cannot handle. A pure passthrough: no refresh-retry,
+ *  no throw; the caller inspects `response.ok` and reads the body it expects. It is
+ *  the one place the base URL and the Authorization header live for those calls. */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    const token = getToken();
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
+    // A string body is JSON; a FormData body sets its own multipart Content-Type
+    // (with boundary), so it must be left alone.
+    if (typeof init.body === 'string') headers['Content-Type'] = 'application/json';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`${BASE}${path}`, { ...init, headers });
+}
+
 class ApiError extends Error {
     status: number;
     constructor(status: number, message: string) {

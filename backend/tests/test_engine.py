@@ -432,6 +432,43 @@ st.contradictions += [
 check("the same evidence DOES bite once their story has moved twice",
       dr.decide_outcome(st) == Outcome.DETAINED.value)
 
+# Exculpation is the counterweight the design promises. A genuinely strong,
+# cooperative account (rich detail, and often having caught the false-premise
+# probe) is forgiven its single lightest slip and walks - which is the only thing
+# that gives catching the probe any effect on the ending.
+st = InterviewState(stage=Stage.CLOSURE.value, exculpation=dr._EXCULPATION_CLEARS)
+st.contradictions.append(Contradiction(id="s", kind="self", turn_seq=1, detail="one slip"))
+check("a strong account is forgiven a single wobble -> released",
+      dr.decide_outcome(st) == Outcome.RELEASED.value)
+
+# The same wobble WITHOUT a strong account behind it lands where it always did.
+st = InterviewState(stage=Stage.CLOSURE.value, exculpation=0.2)
+st.contradictions.append(Contradiction(id="s", kind="self", turn_seq=1, detail="one slip"))
+check("a wobble with a weak account still -> under investigation",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
+
+# It is a counterweight, not an eraser: it never lifts a heavier reading.
+st = InterviewState(stage=Stage.CLOSURE.value, exculpation=1.0)
+st.contradictions += [
+    Contradiction(id="s1", kind="self", turn_seq=1, detail="moved"),
+    Contradiction(id="s2", kind="self", turn_seq=2, detail="moved again"),
+]
+check("even a strong account is not forgiven a story that moved twice",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
+
+st = InterviewState(stage=Stage.CLOSURE.value, exculpation=1.0)
+st.contradictions += [
+    Contradiction(id="e", kind="evidence", turn_seq=1, detail="d", raised=True),
+    Contradiction(id="s", kind="self", turn_seq=2, detail="moved"),
+]
+check("a strong account does not clear a wobble evidence was put on",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
+
+st = InterviewState(stage=Stage.CLOSURE.value, exculpation=1.0)
+st.contradictions.append(Contradiction(id="b", kind="breach", turn_seq=1, detail="conceded"))
+check("nor a concession, however strong the rest of the account",
+      dr.decide_outcome(st) == Outcome.UNDER_INVESTIGATION.value)
+
 st = InterviewState(stage=Stage.PROBE.value, pressure=0.9)
 check("no outcome before closure", dr.decide_outcome(st) is None)
 
@@ -668,8 +705,7 @@ canal = briefs_mod.BRIEFS["canal_walk"]          # bridge, 21:15-22:20
 
 def ingested(claims, brief=canal):
     st = InterviewState()
-    return st, dr.ingest(st, dr.Extraction(claims=claims),
-                         _an("x", responsive=True), brief, 1)
+    return st, dr.ingest(st, dr.Extraction(claims=claims), brief, 1)
 
 
 _, found = ingested([{"text": "I walked along the canal about half nine",
@@ -698,7 +734,7 @@ st, found = ingested([{"text": "I was by the bridge", "start_min": 21 * 60 + 20,
                        "location": "bridge"}])
 dr.ingest(st, dr.Extraction(claims=[{"text": "yes, the bridge, about ten to ten",
                                      "start_min": 21 * 60 + 50, "location": "bridge"}]),
-          _an("x", responsive=True), canal, 2)
+          canal, 2)
 check("conceding it twice is still one breach",
       len([c for c in st.contradictions if c.kind == "breach"]) == 1)
 
@@ -706,12 +742,12 @@ check("conceding it twice is still one breach",
 # every claim lands in one bucket and no topic ever reads as thin.
 st = InterviewState()
 dr.ingest(st, dr.Extraction(claims=[{"text": "the cafe was busy", "location": "cafe"}],
-                            topic="the cafe"), _an("x", responsive=True), canal, 1)
+                            topic="the cafe"), canal, 1)
 check("the live topic is carried onto the claim", st.claims[0].topic == "the cafe")
 
 st = InterviewState(current_topic="the walk home")
 dr.ingest(st, dr.Extraction(claims=[{"text": "it was raining", "location": "home"}]),
-          _an("x", responsive=True), canal, 1)
+          canal, 1)
 check("a claim with no topic named falls to the topic already running",
       st.claims[0].topic == "the walk home")
 
@@ -730,7 +766,7 @@ def said(st, turn, text, start=None, end=None, location=None, place=None):
     return dr.ingest(st, dr.Extraction(claims=[{
         "text": text, "start_min": start, "end_min": end,
         "location": location, "place": place}], topic="the evening"),
-        _an("x", responsive=True), None, turn)
+        None, turn)
 
 
 # Taken from a real interview. All three were about the cafe, so the detector -
@@ -919,7 +955,7 @@ def first_telling():
          "location": "cafe", "activity": "eating", "people": ["Sam"]},
         {"text": "then I walked home", "start_min": 20 * 60, "end_min": 21 * 60,
          "location": "home", "activity": "walking", "people": []},
-    ], topic="the evening"), _an("x", responsive=True), None, 8)
+    ], topic="the evening"), None, 8)
     return st
 
 
@@ -927,7 +963,7 @@ def retell(st, claims, turn=None):
     """Feed a second telling in, with the window already armed."""
     st.turn = turn or (st.retelling_from_turn + 1)
     return dr.ingest(st, dr.Extraction(claims=claims, topic="the evening"),
-                     _an("x", responsive=True), None, st.turn)
+                     None, st.turn)
 
 
 st = first_telling()
@@ -960,6 +996,22 @@ found = retell(st, [{"text": "the cafe, about seven", "start_min": 19 * 60,
                      "end_min": 21 * 60, "location": "cafe"}])
 check("an episode that slid an hour is caught",
       any(c.kind == "retelling" for c in found), str([c.detail for c in found]))
+
+# A free-text place (not one of the four case locations, so location=None) that
+# is swapped for another between tellings is the substitution this test exists to
+# catch - and the old location-only check, with None on both sides, passed over
+# every one of them. Most places people name are not case locations.
+st = InterviewState(turn=8)
+dr.ingest(st, dr.Extraction(claims=[
+    {"text": "I was at the pub with Sam", "start_min": 18 * 60, "end_min": 20 * 60,
+     "place": "the pub", "people": ["Sam"]}], topic="the evening"),
+    None, 8)
+dr.arm_retelling(st, "reverse_chronology")
+found = retell(st, [{"text": "I was at the restaurant then", "start_min": 18 * 60,
+                     "end_min": 20 * 60, "place": "the restaurant"}])
+check("a free-text place that moved between tellings is caught",
+      any(c.kind == "retelling" for c in found),
+      str([(c.kind, c.detail) for c in found]))
 
 # ── the guards. Each of these would punish an honest learner. ────────────────
 
@@ -1076,7 +1128,7 @@ st = InterviewState(turn=6)
 for n in range(6):                                   # six claims, one span
     dr.ingest(st, dr.Extraction(claims=[{"text": f"cafe {n}", "start_min": 18 * 60,
               "end_min": 20 * 60, "location": "cafe", "people": ["Sam"]}],
-              topic="the cafe"), _an("x", responsive=True), None, 6)
+              topic="the cafe"), None, 6)
 dr.arm_retelling(st, "reverse_chronology")
 opened_until, f = st.retelling_until_turn, st.retelling_from_turn
 for n in range(1, dr._RETELLING_MIN_TURNS + 1):
@@ -1091,7 +1143,7 @@ st = InterviewState(turn=8)
 dr.ingest(st, dr.Extraction(claims=[
     {"text": "drinks with work colleagues", "start_min": 17 * 60, "end_min": 18 * 60,
      "location": None, "place": "the pub", "people": ["work colleagues"]}],
-    topic="the pub"), _an("x", responsive=True), None, 8)
+    topic="the pub"), None, 8)
 dr.arm_retelling(st, "reverse_chronology")
 found = retell(st, [{"text": "I was with friends at the pub", "start_min": 17 * 60,
                      "end_min": 18 * 60, "place": "the pub", "people": ["friends"]}])
@@ -1175,7 +1227,7 @@ def storied(turn=6):
          "location": "cafe", "place": "the cafe", "people": ["Sam"]},
         {"text": "then dinner at the Indian restaurant", "start_min": 20 * 60,
          "place": "the Indian restaurant"},
-    ], topic="the evening"), _an("x", responsive=True), None, 3)
+    ], topic="the evening"), None, 3)
     return st
 
 
@@ -1257,7 +1309,7 @@ st.turn = 7
 before_pressure = st.pressure
 echo = dr.ingest(st, dr.Extraction(claims=[
     {"text": "yes, I left about quarter to seven", "end_min": 18 * 60 + 45,
-     "location": "cafe", "place": "the cafe"}]), _an("x", responsive=True), None, 7)
+     "location": "cafe", "place": "the cafe"}]), None, 7)
 check("echoing a planted misquote mints no contradiction",
       not [c for c in echo if c.kind in ("self", "retelling")],
       str([(c.kind, c.detail[:50]) for c in echo]))
@@ -1278,7 +1330,7 @@ st.premise_open = {"claim_id": cafe.id, "kind": "time", "true_min": 19 * 60 + 45
 st.turn = 7
 other = dr.ingest(st, dr.Extraction(claims=[
     {"text": "the Indian place, we got there about half nine", "start_min": 21 * 60 + 30,
-     "place": "the Indian restaurant"}]), _an("x", responsive=True), None, 7)
+     "place": "the Indian restaurant"}]), None, 7)
 check("a contradiction on a different claim still fires while a probe is open",
       any(c.kind == "self" for c in other), str([c.detail[:50] for c in other]))
 

@@ -20,10 +20,23 @@ never evidence of anything.
 Pure functions over claims - no LLM, no I/O, so it is unit-testable.
 """
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, List, Optional
 
 from engine.analysis import analyse
 from engine.state import Claim
+
+
+@lru_cache(maxsize=4096)
+def _sensory(text: str) -> int:
+    """Sensory-detail count for a claim's text.
+
+    assess() runs several times a turn (thin_topics, testable, the retelling
+    tactic preconditions), each re-scanning every claim's text with the full
+    7-regex analyse just to read .sensory - which is a pure function of the text,
+    and the text never changes. Memoised, so each distinct claim is scanned once.
+    """
+    return analyse(text or "").sensory
 
 # Below this a topic is not yet worth testing. Deliberately forgiving: the point
 # is to catch a topic with nothing in it, not to demand a novel.
@@ -164,7 +177,7 @@ def assess(claims: List[Claim]) -> Dict[str, TopicDensity]:
             seen_activities[topic].add(claim.activity.strip().lower())
         if claim.start_min is not None or claim.end_min is not None:
             d.timed += 1
-        d.sensory += analyse(claim.text or "").sensory
+        d.sensory += _sensory(claim.text or "")
 
     for topic, d in out.items():
         d.people = len(seen_people[topic])

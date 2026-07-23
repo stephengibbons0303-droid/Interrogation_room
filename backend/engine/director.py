@@ -6,7 +6,6 @@ need to be consistent, gated and testable are made in Python.
 """
 import uuid
 from dataclasses import dataclass
-from datetime import time as _t
 from typing import Any, Dict, List, Optional, Tuple
 
 from scenario import case
@@ -14,10 +13,11 @@ from scenario.briefs import Brief
 from engine import density
 from engine import tactics as tac
 from engine.analysis import TurnAnalysis
-from engine.state import (CHEN_ARC, STAGE_ORDER, ChenStance, Claim,
+from engine.state import (CHEN_ARC, ChenStance, Claim,
                           Contradiction, InterviewState, Outcome, Stage)
 from engine.timeline import (TimelineReport, build as build_timeline,
-                             fmt as _fmt, normalised as normalise)
+                             fmt as _fmt, merge_spans, normalised as normalise,
+                             overlap_minutes, to_time)
 
 LEAD = "Reynolds"
 SECOND = "Chen"
@@ -238,27 +238,9 @@ def same_place(a: Optional[str], b: Optional[str]) -> bool:
     return bool(ta & tb)
 
 
-def _to_time(minutes: int) -> _t:
-    """Minutes-past-midnight to a time, clamped to the evening's last minute.
-
-    Hour and minute both derive from the same clamped value. The old inline
-    version clamped only the hour term (`min(end, 23*59) // 60`) while taking the
-    minute from the raw value, so an after-midnight bound like 1440 became 23:00
-    instead of 23:59 - shrinking or inverting the evidence window.
-    """
-    m = max(0, min(minutes, 23 * 60 + 59))
-    return _t(m // 60, m % 60)
-
-
 def _covered_minutes(claims: List[Claim]) -> int:
     """Minutes of the evening these claims account for, overlaps merged once."""
-    spans = sorted((c.start_min, c.end_min) for c in claims if c.has_window)
-    merged: List[List[int]] = []
-    for start, end in spans:
-        if merged and start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
+    merged = merge_spans((c.start_min, c.end_min) for c in claims if c.has_window)
     return sum(e - s for s, e in merged)
 
 
@@ -275,7 +257,8 @@ def _match_original(state: InterviewState, claim: Claim,
         return None
     best, best_overlap = None, 0
     for prior in _first_telling(state, before_turn):
-        overlap = min(prior.end_min, claim.end_min) - max(prior.start_min, claim.start_min)
+        overlap = overlap_minutes(prior.start_min, prior.end_min,
+                                  claim.start_min, claim.end_min)
         if overlap > best_overlap:
             best, best_overlap = prior, overlap
     return best
@@ -313,16 +296,26 @@ def _retelling_conflicts(state: InterviewState, claim: Claim, original: Claim,
             was_vouched=vouched,
         ))
 
-    if claim.location and original.location and claim.location != original.location:
+    # Compared on place IDENTITY, not raw `location`. Most places people name are
+    # not one of the four case locations, so both tellings usually carry
+    # location=None and a straight location check passed over every free-text
+    # substitution - "the pub" becoming "the restaurant" - which is exactly the
+    # move this test exists to catch. place_key falls back to their own words, and
+    # same_place errs toward "same" so a re-mention of one place is never a change.
+    here, there = place_key(claim), place_key(original)
+    same_spot = same_place(here, there)
+    if here and there and not same_spot:
         flag(f"telling it again, '{original.text}' has become '{claim.text}' - "
-             f"{original.location} the first time, {claim.location} now")
+             f"{there} the first time, {here} now")
 
     # Stated bounds only. An invented bound is the timeline being helpful, and
-    # accusing someone of moving a time the engine supplied itself is the
-    # failure this codebase keeps having to guard against.
-    if not claim.inferred and not original.inferred:
+    # accusing someone of moving a time the engine supplied itself is the failure
+    # this codebase keeps having to guard against. Gated on the SAME place: a
+    # different place is the substitution flagged above, not a slid time, and two
+    # unidentifiable places cannot be shown to be the same episode at all.
+    if not claim.inferred and not original.inferred and same_spot:
         shift = abs(claim.start_min - original.start_min)
-        if shift >= _RETELLING_TIME_SHIFT and claim.location == original.location:
+        if shift >= _RETELLING_TIME_SHIFT:
             flag(f"'{original.text}' was put at {_fmt(original.start_min)} the first "
                  f"time and {_fmt(claim.start_min)} now - {shift} minutes adrift")
 
@@ -340,7 +333,7 @@ def _retelling_conflicts(state: InterviewState, claim: Claim, original: Claim,
     return out
 
 
-def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis,
+def ingest(state: InterviewState, extraction: Extraction,
            brief: Optional[Brief], turn_seq: int) -> List[Contradiction]:
     """Fold a learner turn into state and return any NEW contradictions."""
     found: List[Contradiction] = []
@@ -393,8 +386,12 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
                 ))
 
     # Detection runs over NORMALISED claims: speech gives one bound, not two, so
-    # comparing raw windows found nothing at all. See timeline.normalised.
-    spans = {c.id: c for c in normalise(state.claims)}
+    # comparing raw windows found nothing at all. See timeline.normalised. Bound
+    # ONCE and reused below: normalise depends only on `superseded_by`, and the
+    # only thing that sets it (a minted self-contradiction) also sets minted_self
+    # and stops the loop that reads this, so the cached copy can never go stale.
+    normalised_claims = normalise(state.claims)
+    spans = {c.id: c for c in normalised_claims}
 
     # Is this the second telling? If so, what they say is measured against the
     # first one instead of being filed as further information - which is the
@@ -440,7 +437,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
         # first telling - running both would raise one difference twice. The
         # evidence pass below still runs either way: a second telling can move
         # them somewhere they had not walked into before, and that is news.
-        for prior in (normalise(state.claims) if matched is None and not minted_self else []):
+        for prior in (normalised_claims if matched is None and not minted_self else []):
             if prior.id == cid or prior.turn_seq >= claim.turn_seq:
                 continue
             if prior.id == premise_claim_id:   # answering a planted misquote; not a wobble
@@ -460,8 +457,8 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             if here and there and not same_place(here, there):
                 if claim.inferred or prior.inferred:
                     continue
-                overlap = min(prior.end_min, claim.end_min) \
-                    - max(prior.start_min, claim.start_min)
+                overlap = overlap_minutes(prior.start_min, prior.end_min,
+                                          claim.start_min, claim.end_min)
                 if overlap >= _SAME_EPISODE_OVERLAP:
                     minted_self = True
                     prior_row.superseded_by = cid
@@ -495,8 +492,9 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             same_field_pair = (
                 (raw_now.start_min is None and raw_before.start_min is None)
                 or (raw_now.end_min is None and raw_before.end_min is None))
-            if not same_field_pair and min(prior.end_min, claim.end_min) \
-                    - max(prior.start_min, claim.start_min) < _SAME_EPISODE_OVERLAP:
+            if not same_field_pair and overlap_minutes(
+                    prior.start_min, prior.end_min,
+                    claim.start_min, claim.end_min) < _SAME_EPISODE_OVERLAP:
                 continue
             moved, which = 0, ""
             for field, label in (("start_min", "arriving"), ("end_min", "leaving")):
@@ -551,7 +549,7 @@ def ingest(state: InterviewState, extraction: Extraction, analysis: TurnAnalysis
             continue                              # a place with no committed time
         lo = stated_lo if stated_lo is not None else stated_hi
         hi = stated_hi if stated_hi is not None else stated_lo
-        window = (_to_time(lo), _to_time(hi))
+        window = (to_time(lo), to_time(hi))
         for ev in case.evidence_for(window, claim.location):
             if ev.id in state.disclosed:
                 continue
@@ -616,6 +614,14 @@ _WOBBLE_KINDS = ("self", "retelling")
 # One bad turn should not end the interview. Several claims can clash with the
 # same story, and without a ceiling they compound into an instant conviction.
 _MAX_PRESSURE_PER_TURN = 0.22
+
+# Exculpation high-water mark that earns the benefit of the doubt on a single
+# wobble (see decide_outcome). Detail and cooperation accrue ~0.06 a turn and
+# catching the false-premise probe adds 0.08, so clearing this takes a sustained,
+# detailed, cooperative account - not one good answer. Provisional: derived from
+# the accrual arithmetic, not yet playtested, and meant to be tuned once the
+# interview has actually been played.
+_EXCULPATION_CLEARS = 0.6
 
 
 def update_pressure(state: InterviewState, new_contradictions: List[Contradiction],
@@ -796,6 +802,19 @@ def decide_outcome(state: InterviewState) -> Optional[str]:
     # conceded it, whether it moved under them, whether they would talk at all.
     if len(wobbled) >= 2 and caught:
         return Outcome.DETAINED.value
+
+    # Exculpation is pressure's counterweight (see InterviewState): detail,
+    # cooperation, and catching the false-premise probe accumulate it. A genuinely
+    # strong account earns the benefit of the doubt on its LIGHTEST failure - a
+    # single wobble, with no evidence put on it and no stonewalling - and walks.
+    # It is a counterweight, not an eraser: it never lifts a breach (their own
+    # admission), a story that moved more than once, or a wobble evidence was put
+    # on, because those turn on what the account did, not on how well the learner
+    # did everything else. This is what finally gives catching the probe an effect.
+    if (len(wobbled) == 1 and not caught and state.evasions < 3
+            and state.exculpation >= _EXCULPATION_CLEARS):
+        return Outcome.RELEASED.value
+
     if wobbled or state.evasions >= 3:
         return Outcome.UNDER_INVESTIGATION.value
     return Outcome.RELEASED.value
@@ -927,8 +946,11 @@ def next_disclosure(state: InterviewState) -> Optional[Tuple[str, str]]:
 
 
 def build_context(state: InterviewState, brief: Optional[Brief],
-                  analysis: Optional[TurnAnalysis] = None) -> tac.Context:
-    report = build_timeline(state.claims)
+                  analysis: Optional[TurnAnalysis] = None,
+                  report: Optional[TimelineReport] = None) -> tac.Context:
+    # The caller usually already built this turn's timeline (for advance_stage);
+    # accept it rather than rebuilding the same thing over the same claims.
+    report = report if report is not None else build_timeline(state.claims)
     return tac.Context(
         state=state, timeline=report, brief=brief,
         thin=density.thin_topics(state.claims),

@@ -26,10 +26,6 @@ class Stage(str, Enum):
     CLOSURE = "closure"
 
 
-STAGE_ORDER = [Stage.ENGAGE, Stage.FREE_RECALL, Stage.PROBE,
-               Stage.CHALLENGE, Stage.CLOSURE]
-
-
 class ChenStance(str, Enum):
     """Chen's arc. She is the trap, and the trap has to be built in stages.
 
@@ -219,18 +215,11 @@ class InterviewState:
         return not self.retelling_active and self.retellings_asked < MAX_RETELLINGS
 
     @property
-    def live_claims(self) -> List[Claim]:
-        return [c for c in self.claims if c.superseded_by is None]
-
-    @property
     def open_contradictions(self) -> List[Contradiction]:
         return [c for c in self.contradictions if not c.raised]
 
     def claim(self, claim_id: str) -> Optional[Claim]:
         return next((c for c in self.claims if c.id == claim_id), None)
-
-    def vouched_claims(self) -> List[Claim]:
-        return [c for c in self.claims if c.vouched_by_chen]
 
     def tick_cooldowns(self) -> None:
         self.cooldowns = {k: v - 1 for k, v in self.cooldowns.items() if v - 1 > 0}

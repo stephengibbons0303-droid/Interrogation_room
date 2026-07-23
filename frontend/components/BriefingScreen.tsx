@@ -1,9 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { getBrief, type Brief } from '../lib/api';
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
+import { apiFetch, getBrief, type Brief } from '../lib/api';
+import { concealmentStyle } from '../lib/concealment';
 
 /**
  * Read the learner their brief before the door opens.
@@ -46,9 +45,8 @@ export default function BriefingScreen({ interviewId, onReady }:
     const speak = useCallback(async (b: Brief) => {
         try {
             setSpeaking(true);
-            const res = await fetch(`${BACKEND_URL}/tts`, {
+            const res = await apiFetch('/tts', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: spokenText(b), voice: 'Briefing' }),
             });
             if (!res.ok) { setSpeaking(false); return; }
@@ -130,18 +128,16 @@ export default function BriefingScreen({ interviewId, onReady }:
                         </p>
 
                         {brief.concealments.map((c, i) => {
-                            const denial = c.kind === 'denial';
+                            const s = concealmentStyle(c.kind);
                             return (
                                 <div key={i} className="px-4 py-3 rounded space-y-1"
                                     style={{
-                                        background: denial
-                                            ? 'rgba(212, 54, 74, 0.08)'
-                                            : 'rgba(212, 160, 54, 0.08)',
-                                        border: `1px solid ${denial ? 'var(--red-accent)' : 'var(--amber)'}`,
+                                        background: s.background,
+                                        border: `1px solid ${s.accent}`,
                                     }}>
                                     <p className="text-xs font-mono uppercase tracking-widest"
-                                        style={{ color: denial ? 'var(--red-accent)' : 'var(--amber)' }}>
-                                        {denial ? 'Do not admit' : 'You must be able to say'}
+                                        style={{ color: s.accent }}>
+                                        {s.label}
                                     </p>
                                     <p className="text-base font-mono leading-relaxed"
                                         style={{ color: 'var(--text-primary)' }}>

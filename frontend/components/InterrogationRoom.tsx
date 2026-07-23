@@ -4,9 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SpeechManager } from '../lib/speech';
 import BriefPanel from './BriefPanel';
 import BriefingScreen from './BriefingScreen';
-import { getInterview, sendMessage, type Modality, type Utterance } from '../lib/api';
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
+import { apiFetch, getInterview, sendMessage, type Modality, type Utterance } from '../lib/api';
 
 /** Shown when a detective's line arrives with no audio behind it.
  *
@@ -14,6 +12,12 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '/api';
  *  message out of the same slot: the two subsystems share one error line, and
  *  audio recovering says nothing about whether the mic is working. */
 const TTS_SILENT = "The detectives' voices aren't coming through — their words are still on screen.";
+
+/** A failed send. Held as a constant for the same reason as TTS_SILENT: it shares
+ *  the one error slot, and a successful transcription proves the mic works but says
+ *  nothing about the network — so onResult must not wipe this. It is cleared only
+ *  when a round-trip actually succeeds (see `receive`). */
+const CONNECTION_FAILED = "Connection to server failed. Is the backend running?";
 
 interface Message {
     role: 'user' | 'agent';
@@ -86,9 +90,8 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             // An aside is two speakers. The backend renders them into a single
             // wav, so playback here is identical to a single line - no
             // sequencing, and the halves cannot arrive out of order.
-            const response = await fetch(`${BACKEND_URL}/tts`, {
+            const response = await apiFetch('/tts', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(
                     segments.length > 1
                         ? { segments }
@@ -123,7 +126,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                 if (onStart) onStart();
             });
         } catch (error) {
-            noAudio(`could not reach ${BACKEND_URL}/tts: ${error}`);
+            noAudio(`could not reach /tts: ${error}`);
         }
     }, []);
 
@@ -181,6 +184,9 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         utterances: Utterance[], phase: string, turn: number,
         newOutcome: string | null, onEnd?: () => void,
     ) => {
+        // A reply arrived, so the connection is back. Clear only that error - a
+        // TTS warning is settled below by playAgentAudio, by its own source.
+        setErrorMsg(prev => (prev === CONNECTION_FAILED ? null : prev));
         if (phase) setCurrentPhase(phase);
 
         const exchangeId = utterances.length > 1 ? `x-${Date.now()}` : undefined;
@@ -228,7 +234,7 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
         } catch (error) {
             console.error("Error sending message:", error);
             setIsWaiting(false);
-            setErrorMsg("Connection to server failed. Is the backend running?");
+            setErrorMsg(CONNECTION_FAILED);
         }
     };
 
@@ -241,7 +247,13 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
             // onResult — Whisper transcription complete, auto-send
             (text) => {
                 setInputText("");
-                setErrorMsg(null);
+                // A good transcription proves the mic and STT work - and nothing
+                // else. Clear only mic/STT-domain warnings; leave a TTS or network
+                // error (which share this one slot) standing, since they are still
+                // true. Clearing them blanket here made a real fault vanish behind
+                // a successful bit of speech.
+                setErrorMsg(prev =>
+                    (prev === TTS_SILENT || prev === CONNECTION_FAILED) ? prev : null);
                 resetSilenceTimer();
                 if (text.trim().length > 0) {
                     // Came back from Whisper, so this turn was spoken. That
@@ -288,7 +300,10 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
     }, []);
 
     /** The detectives' opening line. Deferred until after the briefing, so the
-     *  learner is not read their brief and questioned in the same breath. */
+     *  learner is not read their brief and questioned in the same breath.
+     *  Shown live here for a new interview; the backend persists the SAME text as
+     *  Turn 0 at creation (prompts.OPENING_LINE) so a resume replays it. Keep the
+     *  two strings identical. */
     const beginInterrogation = useCallback(() => {
         setBriefed(true);
         const openingMsg: Message = {

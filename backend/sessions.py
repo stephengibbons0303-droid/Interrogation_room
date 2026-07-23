@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 import uuid
 
@@ -20,6 +20,7 @@ from agent import InterrogationAgent, LLMUnavailable
 from auth import get_current_user
 from db import Claim as ClaimRow, Interview, Turn, User, get_db
 from engine.state import InterviewState
+from prompts import OPENING_LINE
 from scenario import briefs as briefs_mod
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
@@ -200,8 +201,11 @@ def _owned(interview_id: str, user: User, db: Session) -> Interview:
 def list_interviews(user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     """Resumable interviews for the signed-in learner, newest first."""
+    # _summary reads each interview's turns for its preview, so eager-load them in
+    # one batched query rather than letting the per-row access fire N lazy loads.
     rows = (db.query(Interview)
               .filter(Interview.user_id == user.id)
+              .options(selectinload(Interview.turns))
               .order_by(Interview.updated_at.desc())
               .all())
     return [_summary(iv) for iv in rows]
@@ -219,6 +223,14 @@ def create_interview(user: User = Depends(get_current_user),
     iv = Interview(user_id=user.id, brief_id=brief.id,
                    phase=state.stage, engine_state=state.to_dict())
     db.add(iv)
+    db.flush()                              # assign iv.id before the opening Turn
+
+    # The opening line is Turn 0. Persisting it here means a resumed transcript
+    # starts with the question the learner answers, not with an answer to an
+    # absent question - and it does not disturb seq numbering, which counts turns.
+    db.add(Turn(interview_id=iv.id, seq=0, role="agent", agent_name="Reynolds",
+                text=OPENING_LINE, modality="synthesised", addressed_to="learner",
+                phase=state.stage, turn_number=0, emotion="measured"))
     db.commit()
     db.refresh(iv)
     return _summary(iv)

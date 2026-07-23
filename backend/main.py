@@ -2,7 +2,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -13,7 +13,8 @@ import httpx
 import agent as agent_module
 import auth
 import sessions
-from db import init_db
+from auth import get_current_user
+from db import User, init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,6 +48,14 @@ app.add_middleware(
 STT_URL = os.getenv("STT_URL", "http://127.0.0.1:7677/v1/audio/transcriptions")
 TTS_URL = os.getenv("TTS_URL", "http://127.0.0.1:7678/v1/audio/speech")
 
+# /stt and /tts drive the local GPU/CPU speech models. They are authenticated so a
+# cross-origin or LAN caller (should the server ever bind beyond loopback) cannot
+# burn those models anonymously, and bounded so /stt cannot be made to read an
+# arbitrarily large upload into memory. A detective line is ~200 chars; a genuine
+# learner utterance is seconds of 16kHz mono wav, comfortably under the cap.
+_MAX_STT_BYTES = 25 * 1024 * 1024      # 25 MB, matching Whisper's own upload ceiling
+_MAX_TTS_CHARS = 4000
+
 class TTSSegment(BaseModel):
     text: str
     voice: str = "Reynolds"
@@ -69,7 +78,7 @@ async def root():
 # POST /interviews/{id}/chat - authenticated, and scoped to one interview.
 
 @app.post("/tts")
-async def tts_endpoint(request: TTSRequest):
+async def tts_endpoint(request: TTSRequest, user: User = Depends(get_current_user)):
     """Synthesise a detective's line via the local Kokoro sidecar.
 
     Kokoro returns a complete WAV rather than a stream, so unlike the previous
@@ -77,6 +86,10 @@ async def tts_endpoint(request: TTSRequest):
     synthesised before audio starts. Roughly 3.5-4.5x faster than realtime, so a
     typical 20-word line costs ~1.7s of silence up front.
     """
+    total_chars = len(request.text or "") + sum(
+        len(s.text) for s in (request.segments or []))
+    if total_chars > _MAX_TTS_CHARS:
+        raise HTTPException(status_code=413, detail="Text too long to synthesise")
     if request.segments:
         payload = {"segments": [s.model_dump() for s in request.segments]}
     elif request.text:
@@ -105,16 +118,22 @@ async def tts_endpoint(request: TTSRequest):
     )
 
 @app.post("/stt")
-async def stt_endpoint(audio: UploadFile = File(...)):
+async def stt_endpoint(audio: UploadFile = File(...),
+                       user: User = Depends(get_current_user)):
     """Transcribe learner speech via the local faster-whisper sidecar.
 
     Runs large-v3, not small.en: the learners are non-native speakers, and heavily
     accented L2 English is precisely where the small English-only model degrades.
     """
-    try:
-        content = await audio.read()
-        content_type = audio.content_type or "audio/wav"
+    # Read at most the cap (+1 byte to detect overflow) so an oversized upload is
+    # rejected rather than pulled into memory whole. Done before the try/except so
+    # the 413 is not caught by the broad handler below and relabelled a 502.
+    content = await audio.read(_MAX_STT_BYTES + 1)
+    if len(content) > _MAX_STT_BYTES:
+        raise HTTPException(status_code=413, detail="Audio too large")
+    content_type = audio.content_type or "audio/wav"
 
+    try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 STT_URL,

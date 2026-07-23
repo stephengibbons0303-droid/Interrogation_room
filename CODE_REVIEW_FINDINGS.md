@@ -9,10 +9,12 @@ Severity: **C1** critical (security / data loss / core-broken) · **C2** high
 (broken feature, real user harm) · **C3** medium (correctness, narrower) ·
 **Q** quality (cleanup — never a merge blocker).
 
-**Status: all nine C1 criticals AND all ten C2 highs FIXED** (216 engine tests,
-both simulations green, frontend typechecks, real DB migrated). The evidence-
-window minute-clamp bug (finding 21) was fixed in passing with finding 2. C3/Q
-remain open for the next pass.
+**Status: all C1 criticals, C2 highs, C3 mediums fixed; the Q cleanup pass is
+done** (222 engine tests, frontend typechecks, /tts+/stt auth + opening-line
+persistence + list N+1 all verified). Finding 21 was fixed in passing with
+finding 2. Of the 13 Q items, **10 applied** (29, 30, 31, 32, 33, 34, 35, 37,
+38, 39) and **3 deliberately skipped** (36, 40, 41 — see the Q section). Nothing
+in the review remains open.
 
 ---
 
@@ -131,7 +133,15 @@ remain open for the next pass.
 
 ---
 
-## C3 — Medium
+## C3 — Medium  ✅ all fixed
+
+*Fixed 2026-07-23. 20: place_key/same_place in `_retelling_conflicts` (+ test).
+21: already done with finding 2. 22: silence no longer enters live history.
+23: opening line persisted as Turn 0 at creation. 24: `/tts`+`/stt` authed and
+size-capped. 25: `[Name]:` self-label strip restored. 26: error banner cleared by
+source (TTS/network warnings survive a good transcription). 27: aside format and
+offered aside tactic made consistent. 28: exculpation wired into `decide_outcome`
+as a real counterweight — a strong account is forgiven a single wobble (+ tests).*
 
 20. **`_retelling_conflicts` blind to free-text `place`** — `director.py:299`.
     Only `location` is compared, and self-checks are skipped during a retelling, so
@@ -177,7 +187,28 @@ remain open for the next pass.
 
 ---
 
-## Q — Quality (cleanup — for the /simplify pass, not merge blockers)
+## Q — Quality (cleanup)  ✅ /simplify pass done 2026-07-23
+
+*Applied (10): 29 normalise bound once per ingest. 30 timeline built once per
+message (build_context takes a prebuilt report). 31 sensory scan memoised
+(density._sensory lru_cache). 32 list-view N+1 killed with selectinload (the
+persisted-preview column was left — needs a migration). 33 dead code removed —
+STAGE_ORDER, live_claims, vouched_claims, and ingest's unread `analysis` param
+(premise counters KEPT: read by tests). 34 audio lifecycle unified into
+SpeechManager.attachPlayback (BriefingScreen's copy left — separate owner). 35
+concealment style/label extracted to lib/concealment.ts (fetch-lift left). 37
+merge_spans/overlap_minutes extracted to timeline.py. 38 to_time centralised in
+timeline.py (briefs.window_min left — importing engine into scenario inverts the
+layer). 39 apiFetch passthrough in lib/api.ts; the 3 raw audio fetches route
+through it (refresh-retry left — a behaviour change, not cleanup).*
+
+*Skipped (3), verified out of scope: 36 (same_place) and 40 (departure regex)
+both need a new ClaimOut field + prompt change — they alter the LLM extraction
+contract, and their residual issue is correctness, which /simplify does not
+touch. 41 (pass Context to build_system_prompt) is a net negative — only 3 of ~9
+args are on Context, it couples the prompt layer to the engine, and it risks
+dropping the false_premise offer-gate.*
+
 
 29. **ingest re-normalises the claim store per new claim** — `director.py:412`,
     `_first_telling:184`, duplicating the `spans` built at :380. Bind `norm` once.
