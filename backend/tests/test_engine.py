@@ -645,6 +645,68 @@ check("the episodic field is documented in the extraction prompt",
 check("and it carries a description on the schema itself",
       bool(_ClaimOut.model_fields["episodic"].description))
 
+
+print("\nEMPTY EVENING  (a soft hook, never a lie)")
+
+alone = [Claim(id=f"a{n}", turn_seq=n, text="I watched TV on the sofa",
+               start_min=(19 + n) * 60, end_min=(20 + n) * 60, location="home",
+               topic="the evening") for n in range(3)]
+
+check("an evening with nobody and no messages has no contact",
+      not density.has_contact(alone))
+check("naming a person is contact",
+      density.has_contact([Claim(id="p", turn_seq=1, text="I was in", people=["Sam"])]))
+check("a text or a call in the words is contact",
+      density.has_contact([Claim(id="t", turn_seq=1, text="I texted my brother about nine")])
+      and density.has_contact([Claim(id="c", turn_seq=1, text="I rang the takeaway")]))
+# has_contact is a WIDER question than is_named: "some friends" is not a person the
+# police can find (so it stays thin), but it does mean they were not home alone.
+check("vague company still counts as contact, not an empty evening",
+      density.has_contact([Claim(id="v", turn_seq=1, text="out", people=["some friends"])])
+      and not density.is_named("some friends"))
+sup = Claim(id="s", turn_seq=1, text="I called Mum")
+sup.superseded_by = "x"
+check("a retracted contact does not count", not density.has_contact([sup]))
+
+# The hook is surfaced in the prompt only once there is an account to hang it on,
+# and never when the account already has contact in it.
+st_alone = InterviewState(); st_alone.claims = list(alone)
+sys_alone = _prompts.build_system_prompt("Reynolds", st_alone, tl.build(alone), [])
+check("the empty-evening hook is surfaced once an account exists",
+      "NO CONTACT" in sys_alone)
+
+social = [Claim(id=f"s{n}", turn_seq=n, text="we chatted on the sofa",
+                start_min=(19 + n) * 60, end_min=(20 + n) * 60, location="home",
+                people=["Sam"], topic="the evening") for n in range(3)]
+st_social = InterviewState(); st_social.claims = list(social)
+sys_social = _prompts.build_system_prompt("Reynolds", st_social, tl.build(social), [])
+check("but not when the account already has contact",
+      "NO CONTACT" not in sys_social)
+
+sys_empty = _prompts.build_system_prompt("Reynolds", InterviewState(), tl.build([]), [])
+check("and not before there is any account at all",
+      "NO CONTACT" not in sys_empty)
+
+# The invariants the note is adamant about: absence is never scored.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.1); st.claims = list(alone)
+check("an honest contactless evening can still walk",
+      dr.decide_outcome(st) == Outcome.RELEASED.value,
+      "\"I messaged nobody\" is a hook to press, not evidence of fabrication")
+# Isolate the absence from ordinary gap pressure: a contactless but otherwise
+# clean account - the whole window accounted for, no contradictions - draws no
+# pressure from the emptiness, because contact is not an input to update_pressure
+# at all. (An account that leaves time unaccounted is charged for the GAP, which
+# is a separate, legitimate signal - not for having no contact.)
+clean_alone = [Claim(id="ca", turn_seq=1,
+                     text="I was home on my own all evening watching TV",
+                     start_min=17 * 60, end_min=23 * 60 + 59, location="home",
+                     topic="the evening")]
+st = InterviewState(); before = st.pressure
+dr.update_pressure(st, [], _an("I was home on my own, watched TV.", responsive=True),
+                   tl.build(clean_alone))
+check("an empty but otherwise clean evening raises no pressure",
+      st.pressure <= before and not density.has_contact(clean_alone))
+
 # Density must never be a stick. It says where to ask next, and nothing else.
 st = InterviewState()
 before = st.pressure

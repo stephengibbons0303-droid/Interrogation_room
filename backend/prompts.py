@@ -13,6 +13,7 @@ against the brief in Python and hands over only the resulting observation
 from typing import List, Optional
 
 from scenario import case
+from engine import density
 from engine.state import ChenStance, InterviewState, Stage
 from engine.tactics import Tactic
 from engine.timeline import TimelineReport
@@ -183,6 +184,19 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
         parts.append(f"THIN IN THEIR ACCOUNT - '{worst.topic}': {gaps}.\n"
                      "  Detail here is what makes the rest of the interview possible. "
                      "Ask for it plainly, one thing at a time.")
+
+    # An evening with no contact of any kind - nobody named, no call, no text.
+    # Surfaced only once they have actually given an account (report.blocks), so
+    # it is a hook against a narrated evening rather than a nag at an empty one.
+    # A soft signal, never a lie: an honest quiet night has no contact in it and
+    # must still be able to walk. It is a reason to press for something checkable.
+    if report.blocks and not density.has_contact(state.claims):
+        parts.append(
+            "NO CONTACT IN THEIR ACCOUNT SO FAR - nobody named, no call, text or "
+            "message all evening. This is NOT evidence of anything and must never be "
+            "put to them as a lie, but it is fair to lean on lightly - almost everyone "
+            "is on their phone. Invite them to place a person, a call or a message "
+            "that could be checked; do not assert that its absence proves anything.")
     return "\n".join(parts)
 
 

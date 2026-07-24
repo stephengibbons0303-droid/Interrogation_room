@@ -19,6 +19,7 @@ never evidence of anything.
 
 Pure functions over claims - no LLM, no I/O, so it is unit-testable.
 """
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Optional
@@ -68,6 +69,30 @@ def is_named(person: str) -> bool:
     if not p or p in _UNNAMED_WORDS:
         return False
     return not p.startswith(_UNNAMED_STARTS)
+
+
+# Any sign the learner had contact with another person - down a line or across a
+# room. Its ABSENCE across a whole evening is not a lie (an honest quiet night has
+# none) and is never scored, but it is a fair thing for a detective to lean on -
+# almost everyone is on their phone - so it is surfaced as a soft hook, the way a
+# thin topic is. This is the empty-evening signal the phone thread hangs off.
+_CONTACT_RX = re.compile(
+    r"\b(phone|text(?:ed|ing|s)?|call(?:ed|ing|s)?|rang|ring|messag\w*|whats ?app|"
+    r"snapchat|instagram|dm(?:ed|s)?|e-?mail\w*|facetime|voicemail|dial\w*|"
+    r"spoke to|speak to|talk(?:ed|ing)? to|chat(?:ted|ting|s)?)\b", re.I)
+
+
+def has_contact(claims: List[Claim]) -> bool:
+    """Did the account mention contact with anyone - a call, a text, someone they
+    spoke to, or simply another person who was there? Superseded claims aside."""
+    for c in claims:
+        if c.superseded_by is not None:
+            continue
+        if any((p or "").strip() for p in c.people):
+            return True
+        if _CONTACT_RX.search(c.text or ""):
+            return True
+    return False
 
 
 @dataclass

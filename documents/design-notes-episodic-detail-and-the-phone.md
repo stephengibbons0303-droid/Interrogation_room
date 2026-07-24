@@ -3,18 +3,23 @@
 Captured 2026-07-23, from a playtest of the concealment-pair build. Two
 observations from one interview that turn out to be the same problem.
 
-> **STATUS (2026-07-24) — Phase 1 built; phases 2 and 3 outstanding.**
+> **STATUS (2026-07-24) — Phases 1 and 2 built; phase 3 outstanding.**
 >
-> **Built:** the episodic/procedural distinction, via option (a) below — the
-> extractor tags each claim (`ClaimOut.episodic`, documented in the extraction
-> prompt), it is carried on `engine.state.Claim` and persisted on `db.Claim`, and
-> `density.testable()` now counts **episodic claims only**. Procedural detail still
-> earns richness and exculpation everywhere else. Defaults to episodic so an
-> untagged extraction behaves exactly as before.
+> **Phase 1 (episodic/procedural), built:** via option (a) below — the extractor
+> tags each claim (`ClaimOut.episodic`, documented in the extraction prompt),
+> carried on `engine.state.Claim`, persisted on `db.Claim`, and `density.testable()`
+> now counts **episodic claims only**. Procedural detail still earns richness and
+> exculpation everywhere else. Defaults to episodic so an untagged extraction
+> behaves exactly as before.
 >
-> **Still to build:** the empty-evening soft signal (phase 2), and the phone
-> tactics with their engine state — absence hook, verifiability reminder,
-> phone-as-anchor (phase 3).
+> **Phase 2 (empty-evening soft signal), built:** `density.has_contact()` detects
+> whether the account mentions anyone or any call/text; `prompts._state_block`
+> surfaces a "NO CONTACT" hook once there is an account with none in it. It is a
+> prompt hint only — never touches pressure or the outcome, and an honest
+> contactless evening still walks (tests pin both).
+>
+> **Still to build — phase 3:** the phone tactics with their engine state — the
+> absence hook as a real tactic, the verifiability reminder, phone-as-anchor.
 >
 > **Open question below: settled.** PEACE placement is hook + anchoring in PROBE,
 > with the verifiability reminder available in PROBE *and* CHALLENGE — it follows a
