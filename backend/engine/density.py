@@ -95,6 +95,18 @@ def has_contact(claims: List[Claim]) -> bool:
     return False
 
 
+def mentioned_comms(claims: List[Claim]) -> bool:
+    """Did they put a CALL, TEXT or MESSAGE on the record specifically?
+
+    Narrower than has_contact on purpose: sitting with a friend is contact, but
+    "those records exist" only bites on something a phone company actually logs.
+    The verifiability reminder needs this narrower signal - reminding someone that
+    the records of a conversation on their sofa exist would be nonsense.
+    """
+    return any(c.superseded_by is None and _CONTACT_RX.search(c.text or "")
+               for c in claims)
+
+
 @dataclass
 class TopicDensity:
     """What the learner has actually given about one topic."""

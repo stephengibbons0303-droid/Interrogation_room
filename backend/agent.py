@@ -449,6 +449,14 @@ class InterrogationAgent:
         elif result.tactic_used == "challenge_contradiction":
             for c in self.state.open_contradictions[:1]:
                 c.raised = True
+        # The phone beats are one-shot: ledger them when the model actually used
+        # the tactic, so neither the empty-evening hook nor the records reminder is
+        # put twice (see InterviewState). Keyed off the validated reported tactic,
+        # the false_premise pattern.
+        elif result.tactic_used == "phone_absence_hook":
+            self.state.phone_probed = True
+        elif result.tactic_used == "phone_verifiability":
+            self.state.phone_reminder_spent = True
 
         # Extraction -> claims, contradictions, pressure, Chen, stage, outcome.
         final = analyse("" if is_silence else user_message,

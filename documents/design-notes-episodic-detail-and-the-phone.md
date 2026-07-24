@@ -3,7 +3,7 @@
 Captured 2026-07-23, from a playtest of the concealment-pair build. Two
 observations from one interview that turn out to be the same problem.
 
-> **STATUS (2026-07-24) — Phases 1 and 2 built; phase 3 outstanding.**
+> **STATUS (2026-07-24) — fully built (phases 1, 2 and 3).**
 >
 > **Phase 1 (episodic/procedural), built:** via option (a) below — the extractor
 > tags each claim (`ClaimOut.episodic`, documented in the extraction prompt),
@@ -18,8 +18,17 @@ observations from one interview that turn out to be the same problem.
 > prompt hint only — never touches pressure or the outcome, and an honest
 > contactless evening still walks (tests pin both).
 >
-> **Still to build — phase 3:** the phone tactics with their engine state — the
-> absence hook as a real tactic, the verifiability reminder, phone-as-anchor.
+> **Phase 3 (phone tactics), built:** `phone_absence_hook` (PROBE; fires on a
+> contactless account; one-shot via `state.phone_probed`) and `phone_verifiability`
+> (PROBE + CHALLENGE; needs a call/text/message on the record via
+> `density.mentioned_comms`; one-shot via `state.phone_reminder_spent`, backed by the
+> real referenceable `phone_records` evidence). `elicit_sequence` now foregrounds
+> phone activity as the most anchored seam. Engine decides WHEN (preconditions + the
+> one-shot ledger); the model delivers the line, false_premise-style. Both flags
+> round-trip through `to_dict`/`from_dict`.
+>
+> **PEACE placement (was the open question below), settled and implemented:** hook +
+> anchoring in PROBE, the verifiability reminder in PROBE *and* CHALLENGE.
 >
 > **Open question below: settled.** PEACE placement is hook + anchoring in PROBE,
 > with the verifiability reminder available in PROBE *and* CHALLENGE — it follows a

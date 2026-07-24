@@ -189,6 +189,20 @@ class InterviewState:
     premises_caught: int = 0
     premises_missed: int = 0
 
+    # The phone thread. Phone activity is episodic, timestamped and checkable - the
+    # three things habitual narration is not - so it drags the interview off "what I
+    # always do" and onto ground the retelling test and the real phone_records
+    # evidence can bite on. Two one-shot beats, each ledgered so it is not repeated:
+    #   phone_probed        - the empty-evening hook has been put ("you messaged
+    #                         nobody all evening?"). Pressing the same absence twice
+    #                         reads as the interview spinning, so it fires once.
+    #   phone_reminder_spent - the verifiability reminder has been used ("those
+    #                         records exist - are you sure?"). Once is the point;
+    #                         twice is a threat.
+    # An empty evening is never scored as a lie - these only govern what is ASKED.
+    phone_probed: bool = False
+    phone_reminder_spent: bool = False
+
     # The second telling. Armed when a detective asks for the account again -
     # backwards, or outward from a fixed point. While it is live, what the
     # learner says is COMPARED against the first telling rather than added to it,

@@ -707,6 +707,68 @@ dr.update_pressure(st, [], _an("I was home on my own, watched TV.", responsive=T
 check("an empty but otherwise clean evening raises no pressure",
       st.pressure <= before and not density.has_contact(clean_alone))
 
+
+print("\nPHONE THREAD  (episodic, checkable ground)")
+
+# mentioned_comms is NARROWER than has_contact: a call/text/message on the record,
+# not merely company. "those records exist" only bites on something a phone logs.
+check("a text or call on the record is comms",
+      density.mentioned_comms([Claim(id="m", turn_seq=1, text="I texted my brother at nine")])
+      and density.mentioned_comms([Claim(id="m2", turn_seq=1, text="I rang the takeaway")]))
+check("but sitting with a friend is contact, not comms",
+      density.has_contact([Claim(id="p", turn_seq=1, text="on the sofa", people=["Sam"])])
+      and not density.mentioned_comms([Claim(id="p2", turn_seq=1, text="on the sofa",
+                                             people=["Sam"])]))
+
+# The absence hook: a real account with no contact in it, in PROBE, and only once.
+ctx, _ = ctx_with(Stage.PROBE, full_blocks)
+check("the empty-evening hook is offered on a contactless account",
+      "phone_absence_hook" in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.PROBE, full_blocks, phone_probed=True)
+check("but not once it has already been put",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")},
+      "pressing the same absence twice reads as the interview spinning")
+
+social_blocks = list(full_blocks) + [block("s", 21, 0, 21, 5, "home", "I texted Sam", seq=4)]
+ctx, _ = ctx_with(Stage.PROBE, social_blocks)
+check("and not once the account HAS contact in it",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.PROBE, [])
+check("nor before there is any account to hang it on",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+# The verifiability reminder: needs a comms claim on the record; PROBE and CHALLENGE;
+# once. It has real backing - phone_records is on file - so it is not a bluff.
+comms = list(full_blocks) + [block("c", 21, 0, 21, 5, "home",
+                                   "I called the takeaway about nine", seq=4)]
+ctx, _ = ctx_with(Stage.CHALLENGE, comms)
+check("the records reminder is offered once a call is on the record",
+      "phone_verifiability" in {t.id for t in tac.available(ctx, "Reynolds")})
+ctx, _ = ctx_with(Stage.PROBE, comms)
+check("and in probe too, not only challenge",
+      "phone_verifiability" in {t.id for t in tac.available(ctx, "Reynolds")})
+
+company = list(full_blocks) + [Claim(id="w", turn_seq=4, text="I was with Sam",
+                                     start_min=21 * 60, end_min=22 * 60, location="home",
+                                     people=["Sam"])]
+ctx, _ = ctx_with(Stage.CHALLENGE, company)
+check("but not for company alone - a sofa chat is not a phone record",
+      "phone_verifiability" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.CHALLENGE, comms, phone_reminder_spent=True)
+check("and not once the reminder has been spent",
+      "phone_verifiability" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+# The one-shot flags are engine state, so they must survive a resume.
+st = InterviewState(phone_probed=True, phone_reminder_spent=True)
+rt = InterviewState.from_dict(st.to_dict())
+check("the phone one-shot flags survive the JSON round-trip",
+      rt.phone_probed and rt.phone_reminder_spent)
+check("and they default off on a fresh state",
+      not InterviewState().phone_probed and not InterviewState().phone_reminder_spent)
+
 # Density must never be a stick. It says where to ask next, and nothing else.
 st = InterviewState()
 before = st.pressure
