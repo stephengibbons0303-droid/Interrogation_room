@@ -158,3 +158,42 @@ typechecks. Nothing was parked as tech debt.
 - **Two design notes outstanding.** `design-notes-episodic-detail-and-the-phone.md`
   is not yet built (episodic-vs-procedural scoring, the phone thread).
   `design-notes-account-as-ground-truth.md` IS built — its header was stale.
+
+---
+
+## 2026-07-25 — Powering down; pick up here
+
+**State: everything committed, working tree clean, no servers running.** Three
+commits sit on `claude/interrogation-repo-diff-0372f1`, **3 ahead of `main`, 0
+behind**:
+
+- `e9d8d58` Phase 1 — episodic vs procedural scoring, + the five stale-doc fixes
+- `ed74331` Phase 2 — the empty-evening soft signal
+- `c6ff374` Phase 3 — the phone thread (absence hook + records reminder)
+
+251 engine tests pass; the frontend typechecks. Both playtest design notes are now
+**fully built**, and the 41-finding code review was already cleared and merged into
+`main` earlier today (merge `28a8fc1`).
+
+### DO FIRST tomorrow — the pre-merge review gate
+These three commits have **not** been through it. Per CLAUDE.md, before merging to
+`main`:
+
+1. Run **`/crs`** (code-review + simplify in one pass) on the branch diff —
+   `git diff main...HEAD`. Fold confirmed correctness findings into the change;
+   record anything not worth fixing inline in `TECH_DEBT.md`.
+2. Then **merge to `main` locally and push**, the way we did today: from the primary
+   worktree `C:/Users/gibwo/Interrogation_room`, `git merge --no-ff
+   claude/interrogation-repo-diff-0372f1`, then `git push origin main` (a clean
+   fast-forward to `origin/main`). Fast-forward the branch back up to `main`
+   afterwards so it stays a live review base.
+
+### Still open (deferred, not blocking a merge)
+- **Microphone never tested end to end** — the Browser pane blocks capture; needs a
+  real browser. The one unproven link in the STT→LLM→TTS chain.
+- **TTS has no streaming** — Kokoro synthesises the whole utterance first.
+- **Post-session KLP assessment / xAPI** — deferred; the new `episodic` flag and the
+  claims table now capture what it will need.
+
+_Housekeeping: entries above are stamped 2026-07-24 but today is 2026-07-25 (off by
+one, cosmetic). Fix only if it bothers you._
