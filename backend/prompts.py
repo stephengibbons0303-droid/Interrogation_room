@@ -306,6 +306,13 @@ Also extract, from the subject's LAST message only:
   - `activity` and `people` whenever they give them. These are not optional
     extras: what someone did and who was there with them is how the account
     becomes checkable, and a claim recorded without them reads as empty.
+  - `episodic`: true when the claim is about THAT NIGHT specifically - pinned to a
+    clock time or a one-off event ("a text came in about quarter past eight", "the
+    episode ended and it said 10:20"). false when it describes what they usually or
+    always do ("I put my keys on the table", "I take my shoes off at the door").
+    Both are worth having and habitual detail is good language, but only the first
+    kind can be checked against anything - so mark it honestly rather than calling
+    everything true.
   - `topic`: a short, STABLE label for what this stretch of the interview is
     about ("the cafe", "the walk home", "Emily"). Reuse the same label while you
     stay on the same ground - it is how the account is tracked, and a new label

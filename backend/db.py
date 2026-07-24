@@ -193,6 +193,10 @@ class Claim(Base):
     restates = Column(String(36), nullable=True)
     inferred = Column(Integer, nullable=False, default=0)
     vouched_by_chen = Column(Integer, nullable=False, default=0)
+    # 1 = specific to that night, 0 = habitual "what I always do". The assessment
+    # needs the distinction: procedural narration is good language production but
+    # it is not checkable, so it must not read as testable account material.
+    episodic = Column(Integer, nullable=False, server_default="1", default=1)
     created_at = Column(DateTime, default=_now)
 
     interview = relationship("Interview", back_populates="claims")
@@ -225,6 +229,9 @@ _ADDED_COLUMNS = {
         "topic": "VARCHAR(128)",
         "restates": "VARCHAR(36)",
         "inferred": "INTEGER DEFAULT 0",
+        # Existing rows predate the distinction, so they default to episodic -
+        # the same forgiving default the engine uses.
+        "episodic": "INTEGER DEFAULT 1",
     },
 }
 

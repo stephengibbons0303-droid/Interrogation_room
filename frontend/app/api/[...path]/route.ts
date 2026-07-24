@@ -10,9 +10,10 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8013';
  * (/auth/*, /interviews/*).
  *
  * Keeping this server-side means the browser never needs to know the backend
- * URL, which is what lets the deployed build talk to a Railway service that
- * isn't publicly addressed. The Authorization header is forwarded verbatim so
- * bearer tokens survive the hop.
+ * URL: the client talks to same-origin /api and only this route resolves
+ * BACKEND_URL, so the backend can stay bound to loopback and never be addressed
+ * publicly. The Authorization header is forwarded verbatim so bearer tokens
+ * survive the hop.
  *
  * /api/tts and /api/stt keep their own handlers - they deal in audio bytes
  * rather than JSON, and more specific routes take precedence over this one.

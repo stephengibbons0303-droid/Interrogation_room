@@ -1,6 +1,14 @@
 # Design note: the learner's own account as ground truth
 
-Captured 2026-07-21, after the first real playtest of the engine. Not yet built.
+Captured 2026-07-21, after the first real playtest of the engine.
+
+> **BUILT (confirmed 2026-07-24).** Everything in "What is new" below now exists:
+> detail density per topic (`engine/density.py`), re-telling mode
+> (`director.arm_retelling` / `_retelling_conflicts`), false-premise generation and
+> scoring (`director.plan_false_premise` / `resolve_premise`), and `scenario/briefs.py`
+> reduced to an entangled denial + substitution pair. The header used to say "not yet
+> built"; the in-line notes dated 2026-07-22 were written during the build. Kept as
+> the design rationale for why the engine is shaped this way.
 
 ## The problem this solves
 

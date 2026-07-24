@@ -156,6 +156,15 @@ class ClaimOut(BaseModel):
                            "location list. Use the same wording each time for the same place."))
     activity: Optional[str] = None
     people: List[str] = Field(default_factory=list)
+    episodic: bool = Field(
+        True,
+        description=("true when this is specific to THAT night - pinned to a clock "
+                     "time or a one-off event ('a text came in about quarter past "
+                     "eight', 'the episode finished and it said 10:20'). false when "
+                     "it describes what they USUALLY or ALWAYS do ('I put my keys on "
+                     "the table', 'I take my shoes off at the door'). Habitual "
+                     "description is welcome and worth having - it simply cannot be "
+                     "checked against anything, so mark it honestly."))
 
 
 class UtteranceOut(BaseModel):

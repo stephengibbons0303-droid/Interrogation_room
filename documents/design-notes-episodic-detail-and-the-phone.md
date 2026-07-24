@@ -1,7 +1,24 @@
 # Design note: episodic detail, and the phone thread
 
-Captured 2026-07-23, from a playtest of the concealment-pair build. Not yet
-built. Two observations from one interview that turn out to be the same problem.
+Captured 2026-07-23, from a playtest of the concealment-pair build. Two
+observations from one interview that turn out to be the same problem.
+
+> **STATUS (2026-07-24) — Phase 1 built; phases 2 and 3 outstanding.**
+>
+> **Built:** the episodic/procedural distinction, via option (a) below — the
+> extractor tags each claim (`ClaimOut.episodic`, documented in the extraction
+> prompt), it is carried on `engine.state.Claim` and persisted on `db.Claim`, and
+> `density.testable()` now counts **episodic claims only**. Procedural detail still
+> earns richness and exculpation everywhere else. Defaults to episodic so an
+> untagged extraction behaves exactly as before.
+>
+> **Still to build:** the empty-evening soft signal (phase 2), and the phone
+> tactics with their engine state — absence hook, verifiability reminder,
+> phone-as-anchor (phase 3).
+>
+> **Open question below: settled.** PEACE placement is hook + anchoring in PROBE,
+> with the verifiability reminder available in PROBE *and* CHALLENGE — it follows a
+> commitment whenever that lands, and "that can be checked" has challenge character.
 
 ## What the playtest showed
 

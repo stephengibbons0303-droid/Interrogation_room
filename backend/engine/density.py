@@ -237,8 +237,18 @@ def testable(claims: List[Claim], min_solid: int = 2) -> bool:
     technique behind this gate would silently never fire. That failure - a
     technique that cannot trigger because nothing knows enough to trigger it -
     is the exact thing this whole layer was built to end.
+
+    EPISODIC CLAIMS ONLY. Habitual narration - keys on the table, shoes on the
+    rack, the usual seat on the sofa - is rehearsed by definition, so it comes
+    back identical on a second telling and the retelling test finds nothing in
+    it. Counting it here banked a beautifully told routine as an account worth
+    attacking, and then the attack had nothing to bite. Procedural detail still
+    earns richness and exculpation everywhere else; it just cannot be what makes
+    an account testable. thin_topics() deliberately still sees everything - what
+    to press for next is a different question from what can be tested.
     """
-    solid = [d for d in assess(claims).values() if not d.thin]
+    solid = [d for d in assess([c for c in claims if c.episodic]).values()
+             if not d.thin]
     if len(solid) >= min_solid:
         return True
     return len(solid) == 1 and solid[0].score >= STRONG

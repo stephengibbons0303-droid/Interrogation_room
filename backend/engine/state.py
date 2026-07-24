@@ -88,6 +88,17 @@ class Claim:
     # sting fires only on one of these.
     vouched_by_chen: bool = False
 
+    # Is this specific to THAT night, or what they always do? Habitual narration -
+    # keys on the table, shoes on the rack - is rehearsed by definition, so it is
+    # reproduced perfectly on a second telling and can never yield the delta the
+    # retelling test exists to find. It still earns language credit; it just must
+    # not make an account read as worth attacking (see density.testable).
+    #
+    # Defaults TRUE on purpose: if the extractor never sets it, everything counts
+    # exactly as it did before. Defaulting False would make every untagged account
+    # read as untestable and re-open the trap where probing could never end.
+    episodic: bool = True
+
     # Set on the copies produced by timeline.normalised() when a bound had to be
     # invented because speech only gave one. Such a span is good enough to
     # measure coverage, but not to accuse someone of contradicting themselves.

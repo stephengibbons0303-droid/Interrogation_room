@@ -595,6 +595,56 @@ check("a topic whose only 'person' is 'some friends' is thin",
 check("a bare account is never testable however much time it covers",
       not density.testable(full_blocks))
 
+# ── episodic vs procedural ───────────────────────────────────────────────────
+# Habitual narration - keys on the table, shoes on the rack, the usual seat -
+# is rehearsed by definition, so it comes back identical on a second telling and
+# the retelling test can never find anything in it. Banking it as testable meant
+# a beautifully told routine armed an attack that then had nothing to bite.
+habitual = [probed(f"h{n}", 17 + n, 0, 18 + n, 0, "home", "the evening", seq=n)
+            for n in range(5)]
+for c in habitual:
+    c.episodic = False
+check("an account of what they ALWAYS do is not testable",
+      not density.testable(habitual),
+      "habit is consistent by nature, so a second telling cannot catch it out")
+check("but that same detail still scores as rich language",
+      not density.assess(habitual)["the evening"].thin,
+      "declining to weaponise procedural detail is not the same as penalising it")
+
+episodic_acct = [probed(f"e{n}", 17 + n, 0, 18 + n, 0, "home", "the evening", seq=n)
+                 for n in range(5)]
+check("the same account tagged as that NIGHT is testable",
+      density.testable(episodic_acct))
+
+check("a claim nobody tagged counts as episodic",
+      Claim(id="u", turn_seq=1, text="x").episodic,
+      "an untagged extraction must behave exactly as it did before the flag")
+
+# The trap this could have re-opened. If a purely habitual account can never be
+# testable, probing still has to be able to end - PROBE_PATIENCE is the escape,
+# and narrating your own routine well must never become a punishment.
+st = InterviewState(stage=Stage.PROBE.value, turn=dr.PROBE_PATIENCE)
+st.claims = list(habitual)
+dr.advance_stage(st, tl.build(habitual))
+check("a purely habitual account still escapes probing on patience",
+      Stage(st.stage) is Stage.CHALLENGE,
+      "otherwise telling your routine well would trap you in PROBE forever")
+
+# The lesson of `topic_complete`: it was added with no Field description and no
+# mention in the extraction prompt, so the model never once set it and 8 of 13
+# interviews ended with zero topics covered. An extraction field has to be
+# documented in BOTH places or it silently never fires. This pins that for
+# `episodic`, whose whole job depends on the model actually setting it.
+import prompts as _prompts                              # noqa: E402
+from agent import ClaimOut as _ClaimOut                 # noqa: E402
+
+_sys = _prompts.build_system_prompt("Reynolds", InterviewState(), tl.build([]), [])
+check("the episodic field is documented in the extraction prompt",
+      "episodic" in _sys,
+      "a field the prompt never mentions is a field the model never sets")
+check("and it carries a description on the schema itself",
+      bool(_ClaimOut.model_fields["episodic"].description))
+
 # Density must never be a stick. It says where to ask next, and nothing else.
 st = InterviewState()
 before = st.pressure

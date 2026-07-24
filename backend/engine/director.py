@@ -366,6 +366,9 @@ def ingest(state: InterviewState, extraction: Extraction,
             people=raw.get("people") or [],
             topic=topic,
             vouched_by_chen=extraction.chen_vouched_claim,
+            # Absent (an older extraction, or a model that skipped it) counts as
+            # episodic, which is the pre-existing behaviour.
+            episodic=raw.get("episodic", True),
         )
         state.claims.append(claim)
         new_ids.append(claim.id)
