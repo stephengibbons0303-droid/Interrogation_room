@@ -190,7 +190,10 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
     # it is a hook against a narrated evening rather than a nag at an empty one.
     # A soft signal, never a lie: an honest quiet night has no contact in it and
     # must still be able to walk. It is a reason to press for something checkable.
-    if report.blocks and not density.has_contact(state.claims):
+    # Dropped once the absence has actually been put (phone_probed), in lockstep
+    # with the phone_absence_hook tactic - re-raising it every turn is the exact
+    # "interview spinning" the one-shot ledger exists to prevent.
+    if report.blocks and not state.phone_probed and not density.has_contact(state.claims):
         parts.append(
             "NO CONTACT IN THEIR ACCOUNT SO FAR - nobody named, no call, text or "
             "message all evening. This is NOT evidence of anything and must never be "

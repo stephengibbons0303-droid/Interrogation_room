@@ -76,9 +76,15 @@ def is_named(person: str) -> bool:
 # none) and is never scored, but it is a fair thing for a detective to lean on -
 # almost everyone is on their phone - so it is surfaced as a soft hook, the way a
 # thin topic is. This is the empty-evening signal the phone thread hangs off.
+# Only reasonably unambiguous comms terms. Bare "ring" is deliberately absent -
+# it means a boxing ring, a ring road, bells, or a piece of jewellery at least as
+# often as a phone call ("rang" survives, which nearly always means phoned). "dial"
+# is required in a verb form so a clock's dial does not read as dialling a number.
+# This is a heuristic feeding a soft tactic, not a scored signal; a rare miss just
+# means one un-offered hook, never a wrong verdict.
 _CONTACT_RX = re.compile(
-    r"\b(phone|text(?:ed|ing|s)?|call(?:ed|ing|s)?|rang|ring|messag\w*|whats ?app|"
-    r"snapchat|instagram|dm(?:ed|s)?|e-?mail\w*|facetime|voicemail|dial\w*|"
+    r"\b(phone|text(?:ed|ing|s)?|call(?:ed|ing|s)?|rang|messag\w*|whats ?app|"
+    r"snapchat|instagram|dm(?:ed|s)?|e-?mail\w*|facetime|voicemail|dial(?:l?ed|l?ing)|"
     r"spoke to|speak to|talk(?:ed|ing)? to|chat(?:ted|ting|s)?)\b", re.I)
 
 

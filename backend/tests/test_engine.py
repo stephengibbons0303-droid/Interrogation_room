@@ -668,6 +668,18 @@ sup = Claim(id="s", turn_seq=1, text="I called Mum")
 sup.superseded_by = "x"
 check("a retracted contact does not count", not density.has_contact([sup]))
 
+# The comms regex must not read a boxing/bells "ring" or a clock "dial" as a phone
+# call - a false positive there would offer the "those records exist" reminder with
+# nothing on record. Real report verbs (rang/called/texted/dialled) still count.
+for noise in ("I could hear the church bells ring", "we watched the boxing ring",
+              "the clock dial said ten past"):
+    check(f"no false phone contact in {noise!r}",
+          not density.has_contact([Claim(id="n", turn_seq=1, text=noise)]))
+for real in ("I rang my brother", "I called the takeaway", "I texted Sam",
+             "I dialled her number"):
+    check(f"a real call still reads as contact: {real!r}",
+          density.has_contact([Claim(id="r", turn_seq=1, text=real)]))
+
 # The hook is surfaced in the prompt only once there is an account to hang it on,
 # and never when the account already has contact in it.
 st_alone = InterviewState(); st_alone.claims = list(alone)
@@ -686,6 +698,14 @@ check("but not when the account already has contact",
 sys_empty = _prompts.build_system_prompt("Reynolds", InterviewState(), tl.build([]), [])
 check("and not before there is any account at all",
       "NO CONTACT" not in sys_empty)
+
+# Once the absence has actually been put, the prompt stops raising it - in lockstep
+# with the one-shot phone_absence_hook, so the model is not re-nudged every turn.
+st_probed = InterviewState(phone_probed=True); st_probed.claims = list(alone)
+sys_probed = _prompts.build_system_prompt("Reynolds", st_probed, tl.build(alone), [])
+check("and not once the empty-evening hook has already been put",
+      "NO CONTACT" not in sys_probed,
+      "re-raising the absence every turn is the interview spinning")
 
 # The invariants the note is adamant about: absence is never scored.
 st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.1); st.claims = list(alone)
