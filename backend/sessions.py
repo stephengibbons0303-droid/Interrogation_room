@@ -383,4 +383,5 @@ def _claim_row(interview_id: str, c) -> ClaimRow:
         place=c.place, activity=c.activity, people=c.people, topic=c.topic,
         superseded_by=c.superseded_by, restates=c.restates,
         inferred=1 if (c.start_min is None or c.end_min is None) else 0,
-        vouched_by_chen=1 if c.vouched_by_chen else 0)
+        vouched_by_chen=1 if c.vouched_by_chen else 0,
+        episodic=1 if c.episodic else 0)

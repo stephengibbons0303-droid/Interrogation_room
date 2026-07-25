@@ -595,6 +595,200 @@ check("a topic whose only 'person' is 'some friends' is thin",
 check("a bare account is never testable however much time it covers",
       not density.testable(full_blocks))
 
+# ── episodic vs procedural ───────────────────────────────────────────────────
+# Habitual narration - keys on the table, shoes on the rack, the usual seat -
+# is rehearsed by definition, so it comes back identical on a second telling and
+# the retelling test can never find anything in it. Banking it as testable meant
+# a beautifully told routine armed an attack that then had nothing to bite.
+habitual = [probed(f"h{n}", 17 + n, 0, 18 + n, 0, "home", "the evening", seq=n)
+            for n in range(5)]
+for c in habitual:
+    c.episodic = False
+check("an account of what they ALWAYS do is not testable",
+      not density.testable(habitual),
+      "habit is consistent by nature, so a second telling cannot catch it out")
+check("but that same detail still scores as rich language",
+      not density.assess(habitual)["the evening"].thin,
+      "declining to weaponise procedural detail is not the same as penalising it")
+
+episodic_acct = [probed(f"e{n}", 17 + n, 0, 18 + n, 0, "home", "the evening", seq=n)
+                 for n in range(5)]
+check("the same account tagged as that NIGHT is testable",
+      density.testable(episodic_acct))
+
+check("a claim nobody tagged counts as episodic",
+      Claim(id="u", turn_seq=1, text="x").episodic,
+      "an untagged extraction must behave exactly as it did before the flag")
+
+# The trap this could have re-opened. If a purely habitual account can never be
+# testable, probing still has to be able to end - PROBE_PATIENCE is the escape,
+# and narrating your own routine well must never become a punishment.
+st = InterviewState(stage=Stage.PROBE.value, turn=dr.PROBE_PATIENCE)
+st.claims = list(habitual)
+dr.advance_stage(st, tl.build(habitual))
+check("a purely habitual account still escapes probing on patience",
+      Stage(st.stage) is Stage.CHALLENGE,
+      "otherwise telling your routine well would trap you in PROBE forever")
+
+# The lesson of `topic_complete`: it was added with no Field description and no
+# mention in the extraction prompt, so the model never once set it and 8 of 13
+# interviews ended with zero topics covered. An extraction field has to be
+# documented in BOTH places or it silently never fires. This pins that for
+# `episodic`, whose whole job depends on the model actually setting it.
+import prompts as _prompts                              # noqa: E402
+from agent import ClaimOut as _ClaimOut                 # noqa: E402
+
+_sys = _prompts.build_system_prompt("Reynolds", InterviewState(), tl.build([]), [])
+check("the episodic field is documented in the extraction prompt",
+      "episodic" in _sys,
+      "a field the prompt never mentions is a field the model never sets")
+check("and it carries a description on the schema itself",
+      bool(_ClaimOut.model_fields["episodic"].description))
+
+
+print("\nEMPTY EVENING  (a soft hook, never a lie)")
+
+alone = [Claim(id=f"a{n}", turn_seq=n, text="I watched TV on the sofa",
+               start_min=(19 + n) * 60, end_min=(20 + n) * 60, location="home",
+               topic="the evening") for n in range(3)]
+
+check("an evening with nobody and no messages has no contact",
+      not density.has_contact(alone))
+check("naming a person is contact",
+      density.has_contact([Claim(id="p", turn_seq=1, text="I was in", people=["Sam"])]))
+check("a text or a call in the words is contact",
+      density.has_contact([Claim(id="t", turn_seq=1, text="I texted my brother about nine")])
+      and density.has_contact([Claim(id="c", turn_seq=1, text="I rang the takeaway")]))
+# has_contact is a WIDER question than is_named: "some friends" is not a person the
+# police can find (so it stays thin), but it does mean they were not home alone.
+check("vague company still counts as contact, not an empty evening",
+      density.has_contact([Claim(id="v", turn_seq=1, text="out", people=["some friends"])])
+      and not density.is_named("some friends"))
+sup = Claim(id="s", turn_seq=1, text="I called Mum")
+sup.superseded_by = "x"
+check("a retracted contact does not count", not density.has_contact([sup]))
+
+# The comms regex must not read a boxing/bells "ring" or a clock "dial" as a phone
+# call - a false positive there would offer the "those records exist" reminder with
+# nothing on record. Real report verbs (rang/called/texted/dialled) still count.
+for noise in ("I could hear the church bells ring", "we watched the boxing ring",
+              "the clock dial said ten past"):
+    check(f"no false phone contact in {noise!r}",
+          not density.has_contact([Claim(id="n", turn_seq=1, text=noise)]))
+for real in ("I rang my brother", "I called the takeaway", "I texted Sam",
+             "I dialled her number"):
+    check(f"a real call still reads as contact: {real!r}",
+          density.has_contact([Claim(id="r", turn_seq=1, text=real)]))
+
+# The hook is surfaced in the prompt only once there is an account to hang it on,
+# and never when the account already has contact in it.
+st_alone = InterviewState(); st_alone.claims = list(alone)
+sys_alone = _prompts.build_system_prompt("Reynolds", st_alone, tl.build(alone), [])
+check("the empty-evening hook is surfaced once an account exists",
+      "NO CONTACT" in sys_alone)
+
+social = [Claim(id=f"s{n}", turn_seq=n, text="we chatted on the sofa",
+                start_min=(19 + n) * 60, end_min=(20 + n) * 60, location="home",
+                people=["Sam"], topic="the evening") for n in range(3)]
+st_social = InterviewState(); st_social.claims = list(social)
+sys_social = _prompts.build_system_prompt("Reynolds", st_social, tl.build(social), [])
+check("but not when the account already has contact",
+      "NO CONTACT" not in sys_social)
+
+sys_empty = _prompts.build_system_prompt("Reynolds", InterviewState(), tl.build([]), [])
+check("and not before there is any account at all",
+      "NO CONTACT" not in sys_empty)
+
+# Once the absence has actually been put, the prompt stops raising it - in lockstep
+# with the one-shot phone_absence_hook, so the model is not re-nudged every turn.
+st_probed = InterviewState(phone_probed=True); st_probed.claims = list(alone)
+sys_probed = _prompts.build_system_prompt("Reynolds", st_probed, tl.build(alone), [])
+check("and not once the empty-evening hook has already been put",
+      "NO CONTACT" not in sys_probed,
+      "re-raising the absence every turn is the interview spinning")
+
+# The invariants the note is adamant about: absence is never scored.
+st = InterviewState(stage=Stage.CLOSURE.value, pressure=0.1); st.claims = list(alone)
+check("an honest contactless evening can still walk",
+      dr.decide_outcome(st) == Outcome.RELEASED.value,
+      "\"I messaged nobody\" is a hook to press, not evidence of fabrication")
+# Isolate the absence from ordinary gap pressure: a contactless but otherwise
+# clean account - the whole window accounted for, no contradictions - draws no
+# pressure from the emptiness, because contact is not an input to update_pressure
+# at all. (An account that leaves time unaccounted is charged for the GAP, which
+# is a separate, legitimate signal - not for having no contact.)
+clean_alone = [Claim(id="ca", turn_seq=1,
+                     text="I was home on my own all evening watching TV",
+                     start_min=17 * 60, end_min=23 * 60 + 59, location="home",
+                     topic="the evening")]
+st = InterviewState(); before = st.pressure
+dr.update_pressure(st, [], _an("I was home on my own, watched TV.", responsive=True),
+                   tl.build(clean_alone))
+check("an empty but otherwise clean evening raises no pressure",
+      st.pressure <= before and not density.has_contact(clean_alone))
+
+
+print("\nPHONE THREAD  (episodic, checkable ground)")
+
+# mentioned_comms is NARROWER than has_contact: a call/text/message on the record,
+# not merely company. "those records exist" only bites on something a phone logs.
+check("a text or call on the record is comms",
+      density.mentioned_comms([Claim(id="m", turn_seq=1, text="I texted my brother at nine")])
+      and density.mentioned_comms([Claim(id="m2", turn_seq=1, text="I rang the takeaway")]))
+check("but sitting with a friend is contact, not comms",
+      density.has_contact([Claim(id="p", turn_seq=1, text="on the sofa", people=["Sam"])])
+      and not density.mentioned_comms([Claim(id="p2", turn_seq=1, text="on the sofa",
+                                             people=["Sam"])]))
+
+# The absence hook: a real account with no contact in it, in PROBE, and only once.
+ctx, _ = ctx_with(Stage.PROBE, full_blocks)
+check("the empty-evening hook is offered on a contactless account",
+      "phone_absence_hook" in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.PROBE, full_blocks, phone_probed=True)
+check("but not once it has already been put",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")},
+      "pressing the same absence twice reads as the interview spinning")
+
+social_blocks = list(full_blocks) + [block("s", 21, 0, 21, 5, "home", "I texted Sam", seq=4)]
+ctx, _ = ctx_with(Stage.PROBE, social_blocks)
+check("and not once the account HAS contact in it",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.PROBE, [])
+check("nor before there is any account to hang it on",
+      "phone_absence_hook" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+# The verifiability reminder: needs a comms claim on the record; PROBE and CHALLENGE;
+# once. It has real backing - phone_records is on file - so it is not a bluff.
+comms = list(full_blocks) + [block("c", 21, 0, 21, 5, "home",
+                                   "I called the takeaway about nine", seq=4)]
+ctx, _ = ctx_with(Stage.CHALLENGE, comms)
+check("the records reminder is offered once a call is on the record",
+      "phone_verifiability" in {t.id for t in tac.available(ctx, "Reynolds")})
+ctx, _ = ctx_with(Stage.PROBE, comms)
+check("and in probe too, not only challenge",
+      "phone_verifiability" in {t.id for t in tac.available(ctx, "Reynolds")})
+
+company = list(full_blocks) + [Claim(id="w", turn_seq=4, text="I was with Sam",
+                                     start_min=21 * 60, end_min=22 * 60, location="home",
+                                     people=["Sam"])]
+ctx, _ = ctx_with(Stage.CHALLENGE, company)
+check("but not for company alone - a sofa chat is not a phone record",
+      "phone_verifiability" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+ctx, _ = ctx_with(Stage.CHALLENGE, comms, phone_reminder_spent=True)
+check("and not once the reminder has been spent",
+      "phone_verifiability" not in {t.id for t in tac.available(ctx, "Reynolds")})
+
+# The one-shot flags are engine state, so they must survive a resume.
+st = InterviewState(phone_probed=True, phone_reminder_spent=True)
+rt = InterviewState.from_dict(st.to_dict())
+check("the phone one-shot flags survive the JSON round-trip",
+      rt.phone_probed and rt.phone_reminder_spent)
+check("and they default off on a fresh state",
+      not InterviewState().phone_probed and not InterviewState().phone_reminder_spent)
+
 # Density must never be a stick. It says where to ask next, and nothing else.
 st = InterviewState()
 before = st.pressure

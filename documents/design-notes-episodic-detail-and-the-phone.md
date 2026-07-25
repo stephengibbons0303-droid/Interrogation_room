@@ -1,7 +1,38 @@
 # Design note: episodic detail, and the phone thread
 
-Captured 2026-07-23, from a playtest of the concealment-pair build. Not yet
-built. Two observations from one interview that turn out to be the same problem.
+Captured 2026-07-23, from a playtest of the concealment-pair build. Two
+observations from one interview that turn out to be the same problem.
+
+> **STATUS (2026-07-24) — fully built (phases 1, 2 and 3).**
+>
+> **Phase 1 (episodic/procedural), built:** via option (a) below — the extractor
+> tags each claim (`ClaimOut.episodic`, documented in the extraction prompt),
+> carried on `engine.state.Claim`, persisted on `db.Claim`, and `density.testable()`
+> now counts **episodic claims only**. Procedural detail still earns richness and
+> exculpation everywhere else. Defaults to episodic so an untagged extraction
+> behaves exactly as before.
+>
+> **Phase 2 (empty-evening soft signal), built:** `density.has_contact()` detects
+> whether the account mentions anyone or any call/text; `prompts._state_block`
+> surfaces a "NO CONTACT" hook once there is an account with none in it. It is a
+> prompt hint only — never touches pressure or the outcome, and an honest
+> contactless evening still walks (tests pin both).
+>
+> **Phase 3 (phone tactics), built:** `phone_absence_hook` (PROBE; fires on a
+> contactless account; one-shot via `state.phone_probed`) and `phone_verifiability`
+> (PROBE + CHALLENGE; needs a call/text/message on the record via
+> `density.mentioned_comms`; one-shot via `state.phone_reminder_spent`, backed by the
+> real referenceable `phone_records` evidence). `elicit_sequence` now foregrounds
+> phone activity as the most anchored seam. Engine decides WHEN (preconditions + the
+> one-shot ledger); the model delivers the line, false_premise-style. Both flags
+> round-trip through `to_dict`/`from_dict`.
+>
+> **PEACE placement (was the open question below), settled and implemented:** hook +
+> anchoring in PROBE, the verifiability reminder in PROBE *and* CHALLENGE.
+>
+> **Open question below: settled.** PEACE placement is hook + anchoring in PROBE,
+> with the verifiability reminder available in PROBE *and* CHALLENGE — it follows a
+> commitment whenever that lands, and "that can be checked" has challenge character.
 
 ## What the playtest showed
 

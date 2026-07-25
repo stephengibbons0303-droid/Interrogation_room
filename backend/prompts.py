@@ -13,6 +13,7 @@ against the brief in Python and hands over only the resulting observation
 from typing import List, Optional
 
 from scenario import case
+from engine import density
 from engine.state import ChenStance, InterviewState, Stage
 from engine.tactics import Tactic
 from engine.timeline import TimelineReport
@@ -183,6 +184,22 @@ def _state_block(state: InterviewState, report: TimelineReport, thin=None) -> st
         parts.append(f"THIN IN THEIR ACCOUNT - '{worst.topic}': {gaps}.\n"
                      "  Detail here is what makes the rest of the interview possible. "
                      "Ask for it plainly, one thing at a time.")
+
+    # An evening with no contact of any kind - nobody named, no call, no text.
+    # Surfaced only once they have actually given an account (report.blocks), so
+    # it is a hook against a narrated evening rather than a nag at an empty one.
+    # A soft signal, never a lie: an honest quiet night has no contact in it and
+    # must still be able to walk. It is a reason to press for something checkable.
+    # Dropped once the absence has actually been put (phone_probed), in lockstep
+    # with the phone_absence_hook tactic - re-raising it every turn is the exact
+    # "interview spinning" the one-shot ledger exists to prevent.
+    if report.blocks and not state.phone_probed and not density.has_contact(state.claims):
+        parts.append(
+            "NO CONTACT IN THEIR ACCOUNT SO FAR - nobody named, no call, text or "
+            "message all evening. This is NOT evidence of anything and must never be "
+            "put to them as a lie, but it is fair to lean on lightly - almost everyone "
+            "is on their phone. Invite them to place a person, a call or a message "
+            "that could be checked; do not assert that its absence proves anything.")
     return "\n".join(parts)
 
 
@@ -306,6 +323,13 @@ Also extract, from the subject's LAST message only:
   - `activity` and `people` whenever they give them. These are not optional
     extras: what someone did and who was there with them is how the account
     becomes checkable, and a claim recorded without them reads as empty.
+  - `episodic`: true when the claim is about THAT NIGHT specifically - pinned to a
+    clock time or a one-off event ("a text came in about quarter past eight", "the
+    episode ended and it said 10:20"). false when it describes what they usually or
+    always do ("I put my keys on the table", "I take my shoes off at the door").
+    Both are worth having and habitual detail is good language, but only the first
+    kind can be checked against anything - so mark it honestly rather than calling
+    everything true.
   - `topic`: a short, STABLE label for what this stretch of the interview is
     about ("the cafe", "the walk home", "Emily"). Reuse the same label while you
     stay on the same ground - it is how the account is tracked, and a new label

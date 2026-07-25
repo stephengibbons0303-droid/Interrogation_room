@@ -149,6 +149,23 @@ def _aside_worthwhile(c: Context) -> bool:
                 or c.last_learner_evasive)
 
 
+def _no_contact_account(c: Context) -> bool:
+    """A real account exists and mentions no contact of any kind - the empty-evening
+    hook. Put once (phone_probed): pressing the same absence twice reads as the
+    interview spinning. Never a lie, only a reason to press for something checkable.
+    """
+    return (bool(c.timeline.blocks) and not c.state.phone_probed
+            and not density.has_contact(c.state.claims))
+
+
+def _comms_to_verify(c: Context) -> bool:
+    """They have put a call, text or message on the record and the verifiability
+    reminder is unspent. `phone_records` is real evidence on file, so the reminder
+    is not a bluff."""
+    return (not c.state.phone_reminder_spent
+            and density.mentioned_comms(c.state.claims))
+
+
 # ── the registry ─────────────────────────────────────────────────────────────
 
 _ALL: List[Tactic] = [
@@ -217,10 +234,27 @@ _ALL: List[Tactic] = [
     # timeline long enough that re-ordering it under pressure costs something.
     Tactic("elicit_sequence", EITHER, [Stage.PROBE],
            "Take one stretch of their evening and get the small events inside it, in "
-           "order: calls made or received, messages, rounds bought, who arrived and left "
-           "when, paying, what they were carrying or wearing. Pin at least two of them to "
-           "clock times. One stretch only - do not sweep the whole evening.",
+           "order - and lean on phone activity FIRST, because it is the most anchored "
+           "and checkable seam there is: calls made or received, texts, what they "
+           "looked at and when. Then the rest: rounds bought, who arrived and left "
+           "when, paying, what they were carrying. Pin at least two events to clock "
+           "times. One stretch only - do not sweep the whole evening.",
            precondition=_sequence_sparse, cooldown=4, weight=2.5),
+
+    # The phone thread (see the design note). Phone activity is episodic,
+    # timestamped and checkable - the three things habitual narration is not - so it
+    # drags the interview off "what I always do" and onto ground the retelling test
+    # and the real phone_records evidence can bite on. The hook turns a shrug into a
+    # commitment; the reminder attaches a cost to it. The engine decides WHEN
+    # (preconditions + a one-shot ledger); the model only delivers the line.
+    Tactic("phone_absence_hook", EITHER, [Stage.PROBE],
+           "They have described their evening but named nobody and mentioned no call, "
+           "text or message in it. Put that to them lightly: almost everyone is on "
+           "their phone, so did they really speak to and message no one all evening? "
+           "You are NOT accusing them of lying - you are inviting them to place a "
+           "person, a call or a message. The point is to turn a shrug into something "
+           "checkable.",
+           precondition=_no_contact_account, cooldown=6, weight=2.5),
 
     # Directed probing. funnel_probe picks a topic; this one is aimed at the
     # specific hole the engine has measured, which is what turns "press them a
@@ -295,6 +329,15 @@ _ALL: List[Tactic] = [
            "Ask whether there is any reason a particular thing might turn up - footage, a "
            "print, a record - without confirming that it exists.",
            precondition=_timeline_ready, cooldown=8),
+    # The second phone move. Available from PROBE (a commitment can land there) and
+    # on into CHALLENGE, where "that can be checked" carries most weight.
+    Tactic("phone_verifiability", EITHER, [Stage.PROBE, Stage.CHALLENGE],
+           "They have put a call, a text or a message on the record. Remind them, "
+           "without threat, that phone records are real and are checked - 'those "
+           "records exist; are you certain that's right?' - so anything invented here "
+           "would look very bad. This attaches a real cost to a claim the police can "
+           "actually verify. Do not say what the records show, only that they exist.",
+           precondition=_comms_to_verify, cooldown=5, weight=2.6),
     # The false-premise probe. The engine authors the misquote; the model only
     # delivers it. The sharpest mechanic in the design note, and nearly free:
     # the claim store already knows exactly what was said, so "did they catch

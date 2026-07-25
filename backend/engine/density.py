@@ -19,6 +19,7 @@ never evidence of anything.
 
 Pure functions over claims - no LLM, no I/O, so it is unit-testable.
 """
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Optional
@@ -68,6 +69,48 @@ def is_named(person: str) -> bool:
     if not p or p in _UNNAMED_WORDS:
         return False
     return not p.startswith(_UNNAMED_STARTS)
+
+
+# Any sign the learner had contact with another person - down a line or across a
+# room. Its ABSENCE across a whole evening is not a lie (an honest quiet night has
+# none) and is never scored, but it is a fair thing for a detective to lean on -
+# almost everyone is on their phone - so it is surfaced as a soft hook, the way a
+# thin topic is. This is the empty-evening signal the phone thread hangs off.
+# Only reasonably unambiguous comms terms. Bare "ring" is deliberately absent -
+# it means a boxing ring, a ring road, bells, or a piece of jewellery at least as
+# often as a phone call ("rang" survives, which nearly always means phoned). "dial"
+# is required in a verb form so a clock's dial does not read as dialling a number.
+# This is a heuristic feeding a soft tactic, not a scored signal; a rare miss just
+# means one un-offered hook, never a wrong verdict.
+_CONTACT_RX = re.compile(
+    r"\b(phone|text(?:ed|ing|s)?|call(?:ed|ing|s)?|rang|messag\w*|whats ?app|"
+    r"snapchat|instagram|dm(?:ed|s)?|e-?mail\w*|facetime|voicemail|dial(?:l?ed|l?ing)|"
+    r"spoke to|speak to|talk(?:ed|ing)? to|chat(?:ted|ting|s)?)\b", re.I)
+
+
+def has_contact(claims: List[Claim]) -> bool:
+    """Did the account mention contact with anyone - a call, a text, someone they
+    spoke to, or simply another person who was there? Superseded claims aside."""
+    for c in claims:
+        if c.superseded_by is not None:
+            continue
+        if any((p or "").strip() for p in c.people):
+            return True
+        if _CONTACT_RX.search(c.text or ""):
+            return True
+    return False
+
+
+def mentioned_comms(claims: List[Claim]) -> bool:
+    """Did they put a CALL, TEXT or MESSAGE on the record specifically?
+
+    Narrower than has_contact on purpose: sitting with a friend is contact, but
+    "those records exist" only bites on something a phone company actually logs.
+    The verifiability reminder needs this narrower signal - reminding someone that
+    the records of a conversation on their sofa exist would be nonsense.
+    """
+    return any(c.superseded_by is None and _CONTACT_RX.search(c.text or "")
+               for c in claims)
 
 
 @dataclass
@@ -237,8 +280,18 @@ def testable(claims: List[Claim], min_solid: int = 2) -> bool:
     technique behind this gate would silently never fire. That failure - a
     technique that cannot trigger because nothing knows enough to trigger it -
     is the exact thing this whole layer was built to end.
+
+    EPISODIC CLAIMS ONLY. Habitual narration - keys on the table, shoes on the
+    rack, the usual seat on the sofa - is rehearsed by definition, so it comes
+    back identical on a second telling and the retelling test finds nothing in
+    it. Counting it here banked a beautifully told routine as an account worth
+    attacking, and then the attack had nothing to bite. Procedural detail still
+    earns richness and exculpation everywhere else; it just cannot be what makes
+    an account testable. thin_topics() deliberately still sees everything - what
+    to press for next is a different question from what can be tested.
     """
-    solid = [d for d in assess(claims).values() if not d.thin]
+    solid = [d for d in assess([c for c in claims if c.episodic]).values()
+             if not d.thin]
     if len(solid) >= min_solid:
         return True
     return len(solid) == 1 and solid[0].score >= STRONG

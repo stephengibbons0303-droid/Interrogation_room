@@ -2,6 +2,10 @@
 
 ## 2026-07-20 — Repo vs. GitHub vs. Railway deploy check
 
+> **SUPERSEDED (2026-07-24).** The project no longer deploys to Railway; it runs
+> locally against Azure OpenAI. The Railway URL below is dead and the deploy
+> comparison no longer applies. Kept as history — see the 2026-07-24 entry.
+
 **Question:** Is there a diff between the local repo and the version deployed from GitHub (Railway)?
 
 **Conclusion: No meaningful diff — repo, GitHub, and the live Railway frontend are all in sync.**
@@ -13,7 +17,7 @@
   - Discriminating test: the ORT `.mjs` backend wrappers (`/ort-wasm-simd-threaded.mjs`, `.jsep.mjs`) are served with 200. These are only produced by the prebuild script **after** commit `d98b532` ("Copy ORT .mjs backend wrappers alongside .wasm binaries"), so the deploy is built from the current `HEAD`, not a stale build.
 
 ### Open thread for next session
-- **Backend not yet compared.** It's a separate Railway resource; only the frontend URL was available. Frontend talks to it via `/api` (proxied through `NEXT_PUBLIC_BACKEND_URL`). Need the backend service URL to verify it against the repo.
+- ~~**Backend not yet compared.**~~ **Obsolete (2026-07-24)** — there is no Railway backend to compare against. The backend runs locally on 8013.
 
 ### Reference docs in repo
 - `README.md` — project overview + roadmap/to-do checklist.
@@ -63,16 +67,17 @@ round-trips verbatim ("Have a seat. State your full name for the record, please.
 STT ~1.0 s on GPU; TTS 3.5–4.5× faster than realtime.
 
 ### Open threads
-- **LLM not wired.** Runs in Mock Mode. Decide GPT-4o vs local Ollama. Note the VRAM
-  cost: `gemma4:26b` (18 GB) + large-v3 (~3 GB) will not comfortably share 24 GB.
+- ~~**LLM not wired.**~~ **Resolved (2026-07-24)** — running on Azure OpenAI via
+  `AZURE_OPENAI_DEPLOYMENT` (see `backend/.env.example`). Mock Mode survives only as
+  the no-key fallback for a fresh clone. Local Ollama was not taken up, so the VRAM
+  trade-off no longer applies.
 - **Microphone never tested** — the Browser pane blocks capture. Needs a real browser.
   This is the one part of the chain still unproven end to end.
 - **TTS has no streaming.** Kokoro synthesises the whole utterance first (~1.7 s of
   silence before a 20-word line). If pacing suffers, chunk by sentence.
 - **Accented-L2 accuracy unvalidated** — large-v3 is the right call in principle, but
   has not been tested on real learner speech.
-- `unmute_readme.md` in the repo root is stray research debris (Kyutai's README), not
-  project content — safe to delete.
+- ~~`unmute_readme.md` is stray research debris — safe to delete.~~ **Done** — deleted.
 
 ---
 
@@ -121,3 +126,74 @@ containing both voices, verified byte-exactly.
   `addressed_to` and the `claims` table are already capturing what it will need.
 - `released` is hard to reach on briefs where the case evidence points at the learner
   regardless; worth tuning once you have played it.
+
+---
+
+## 2026-07-24 — Off Railway; local + Azure OpenAI, and the review cleared
+
+**Where this runs now: entirely locally.** There is no Railway deployment. The
+2026-07-20 entry above is history, not current state.
+
+- **LLM:** Azure OpenAI, deployment set by `AZURE_OPENAI_DEPLOYMENT` in
+  `backend/.env` (see `backend/.env.example`). Mock Mode remains only as the
+  no-key fallback so a fresh clone still boots.
+- **Speech:** unchanged — the local pair-C sidecars, STT `:7677` (faster-whisper
+  large-v3, CUDA) and TTS `:7678` (Kokoro, CPU, British voices).
+- **Ports:** backend 8013, frontend 5185 (this repo's reserved pair; see CLAUDE.md
+  and `~/.claude/PORTS.md`).
+
+### The code review is fully cleared
+All 41 findings from the max-effort review are resolved: nine C1 criticals, ten C2
+highs, nine C3 mediums, and the Q cleanup pass (10 applied, 3 skipped with reasons
+recorded in `CODE_REVIEW_FINDINGS.md`). 222 engine tests pass; the frontend
+typechecks. Nothing was parked as tech debt.
+
+### Still open
+- **Microphone never tested end to end** — the automated browser blocks capture.
+  Still the one unproven link in the chain. Needs a real browser.
+- **TTS has no streaming** — Kokoro synthesises the whole utterance first.
+- **Accented-L2 STT accuracy unvalidated** on real learner speech.
+- **Post-session KLP assessment / xAPI** — deliberately deferred. The claims table,
+  `Turn.modality` and `addressed_to` already capture what it will need.
+- **Two design notes outstanding.** `design-notes-episodic-detail-and-the-phone.md`
+  is not yet built (episodic-vs-procedural scoring, the phone thread).
+  `design-notes-account-as-ground-truth.md` IS built — its header was stale.
+
+---
+
+## 2026-07-25 — Powering down; pick up here
+
+**State: everything committed, working tree clean, no servers running.** Three
+commits sit on `claude/interrogation-repo-diff-0372f1`, **3 ahead of `main`, 0
+behind**:
+
+- `e9d8d58` Phase 1 — episodic vs procedural scoring, + the five stale-doc fixes
+- `ed74331` Phase 2 — the empty-evening soft signal
+- `c6ff374` Phase 3 — the phone thread (absence hook + records reminder)
+
+251 engine tests pass; the frontend typechecks. Both playtest design notes are now
+**fully built**, and the 41-finding code review was already cleared and merged into
+`main` earlier today (merge `28a8fc1`).
+
+### DO FIRST tomorrow — the pre-merge review gate
+These three commits have **not** been through it. Per CLAUDE.md, before merging to
+`main`:
+
+1. Run **`/crs`** (code-review + simplify in one pass) on the branch diff —
+   `git diff main...HEAD`. Fold confirmed correctness findings into the change;
+   record anything not worth fixing inline in `TECH_DEBT.md`.
+2. Then **merge to `main` locally and push**, the way we did today: from the primary
+   worktree `C:/Users/gibwo/Interrogation_room`, `git merge --no-ff
+   claude/interrogation-repo-diff-0372f1`, then `git push origin main` (a clean
+   fast-forward to `origin/main`). Fast-forward the branch back up to `main`
+   afterwards so it stays a live review base.
+
+### Still open (deferred, not blocking a merge)
+- **Microphone never tested end to end** — the Browser pane blocks capture; needs a
+  real browser. The one unproven link in the STT→LLM→TTS chain.
+- **TTS has no streaming** — Kokoro synthesises the whole utterance first.
+- **Post-session KLP assessment / xAPI** — deferred; the new `episodic` flag and the
+  claims table now capture what it will need.
+
+_Housekeeping: entries above are stamped 2026-07-24 but today is 2026-07-25 (off by
+one, cosmetic). Fix only if it bothers you._

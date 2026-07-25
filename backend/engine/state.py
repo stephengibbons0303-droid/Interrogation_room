@@ -88,6 +88,17 @@ class Claim:
     # sting fires only on one of these.
     vouched_by_chen: bool = False
 
+    # Is this specific to THAT night, or what they always do? Habitual narration -
+    # keys on the table, shoes on the rack - is rehearsed by definition, so it is
+    # reproduced perfectly on a second telling and can never yield the delta the
+    # retelling test exists to find. It still earns language credit; it just must
+    # not make an account read as worth attacking (see density.testable).
+    #
+    # Defaults TRUE on purpose: if the extractor never sets it, everything counts
+    # exactly as it did before. Defaulting False would make every untagged account
+    # read as untestable and re-open the trap where probing could never end.
+    episodic: bool = True
+
     # Set on the copies produced by timeline.normalised() when a bound had to be
     # invented because speech only gave one. Such a span is good enough to
     # measure coverage, but not to accuse someone of contradicting themselves.
@@ -177,6 +188,20 @@ class InterviewState:
     premises_posed: int = 0
     premises_caught: int = 0
     premises_missed: int = 0
+
+    # The phone thread. Phone activity is episodic, timestamped and checkable - the
+    # three things habitual narration is not - so it drags the interview off "what I
+    # always do" and onto ground the retelling test and the real phone_records
+    # evidence can bite on. Two one-shot beats, each ledgered so it is not repeated:
+    #   phone_probed        - the empty-evening hook has been put ("you messaged
+    #                         nobody all evening?"). Pressing the same absence twice
+    #                         reads as the interview spinning, so it fires once.
+    #   phone_reminder_spent - the verifiability reminder has been used ("those
+    #                         records exist - are you sure?"). Once is the point;
+    #                         twice is a threat.
+    # An empty evening is never scored as a lie - these only govern what is ASKED.
+    phone_probed: bool = False
+    phone_reminder_spent: bool = False
 
     # The second telling. Armed when a detective asks for the account again -
     # backwards, or outward from a fixed point. While it is live, what the

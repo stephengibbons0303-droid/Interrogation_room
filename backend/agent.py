@@ -156,6 +156,15 @@ class ClaimOut(BaseModel):
                            "location list. Use the same wording each time for the same place."))
     activity: Optional[str] = None
     people: List[str] = Field(default_factory=list)
+    episodic: bool = Field(
+        True,
+        description=("true when this is specific to THAT night - pinned to a clock "
+                     "time or a one-off event ('a text came in about quarter past "
+                     "eight', 'the episode finished and it said 10:20'). false when "
+                     "it describes what they USUALLY or ALWAYS do ('I put my keys on "
+                     "the table', 'I take my shoes off at the door'). Habitual "
+                     "description is welcome and worth having - it simply cannot be "
+                     "checked against anything, so mark it honestly."))
 
 
 class UtteranceOut(BaseModel):
@@ -440,6 +449,14 @@ class InterrogationAgent:
         elif result.tactic_used == "challenge_contradiction":
             for c in self.state.open_contradictions[:1]:
                 c.raised = True
+        # The phone beats are one-shot: ledger them when the model actually used
+        # the tactic, so neither the empty-evening hook nor the records reminder is
+        # put twice (see InterviewState). Keyed off the validated reported tactic,
+        # the false_premise pattern.
+        elif result.tactic_used == "phone_absence_hook":
+            self.state.phone_probed = True
+        elif result.tactic_used == "phone_verifiability":
+            self.state.phone_reminder_spent = True
 
         # Extraction -> claims, contradictions, pressure, Chen, stage, outcome.
         final = analyse("" if is_silence else user_message,
