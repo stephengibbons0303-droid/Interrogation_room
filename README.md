@@ -18,6 +18,20 @@ The system employs a multi-agent architecture to manage the scenario:
     - **Trigger Agent**: Manages silence and pacing.
     - **Proficiency Calibration**: Adjusts linguistic complexity based on user performance.
 
+## Engine reference
+
+The interrogation logic is a deterministic engine (`backend/engine/`): it decides
+*what* happens each turn — which detective speaks, which tactic they may use, how
+much trouble the learner is in — and the LLM only decides *how* it is said.
+
+- **[Engine map](documents/engine-map.md)** — the decision surface as Mermaid
+  diagrams (per-turn pipeline, PEACE stage machine, speaker triggers, the verdict
+  tree, Chen's arc) plus the tactic × stage matrix and gates. Generated from the
+  code, so it can't drift: `cd backend && python scripts/engine_map.py md > ../documents/engine-map.md`.
+- **Design notes** — `documents/design-notes-account-as-ground-truth.md` and
+  `documents/design-notes-episodic-detail-and-the-phone.md` explain why the engine
+  is shaped the way it is.
+
 ## To-Do List / Roadmap
 
 ### 1. Backend Infrastructure (Python)

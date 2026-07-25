@@ -173,6 +173,9 @@ class ChatResponse(BaseModel):
     interview_id: str
     outcome: Optional[str] = None
     tactic: Optional[str] = None
+    # The engine's decision trace for this turn - what it decided and why. For the
+    # admin engine-trace view; ordinary clients ignore it.
+    trace: Optional[dict] = None
 
 
 def _summary(iv: Interview) -> InterviewSummary:
@@ -266,6 +269,24 @@ def get_interview(interview_id: str, user: User = Depends(get_current_user),
     return detail
 
 
+@router.get("/{interview_id}/trace", response_model=List[dict])
+def get_trace(interview_id: str, user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    """The engine's per-turn decision traces for one interview, in order.
+
+    Dev/admin observability: what the engine decided each turn and why. Owner-
+    scoped for now; role-gate it before exposing engine internals in a real
+    deployment. One trace per exchange - silence and user rows carry none.
+    """
+    _owned(interview_id, user, db)                 # ownership check / 404 only
+    rows = (db.query(Turn.decision_trace)
+              .filter(Turn.interview_id == interview_id,
+                      Turn.decision_trace.isnot(None))
+              .order_by(Turn.seq)
+              .all())
+    return [r[0] for r in rows]
+
+
 @router.delete("/{interview_id}", status_code=204)
 def delete_interview(interview_id: str, user: User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
@@ -317,6 +338,7 @@ def chat(interview_id: str, body: ChatRequest,
         utterances=[UtteranceOut(**u) for u in utterances],
         phase=result.get("stage", iv.phase), turn=result.get("turn", iv.turn_count),
         interview_id=iv.id, outcome=iv.outcome, tactic=result.get("tactic"),
+        trace=result.get("trace"),
     )
 
 
@@ -335,13 +357,16 @@ def _persist_turn(db: Session, iv: Interview, agent: InterrogationAgent,
     # An aside is one exchange with two speakers. Sharing an exchange_id keeps
     # them grouped while leaving each line separately analysable.
     exchange = str(uuid.uuid4()) if len(utterances) > 1 else None
-    for u in utterances:
+    # The decision trace belongs to the exchange, not to each line - store it once,
+    # on the first agent row, so the trace endpoint reads exactly one per turn.
+    for i, u in enumerate(utterances):
         db.add(Turn(interview_id=iv.id, seq=seq, role="agent",
                     agent_name=u.get("speaker"), text=u.get("text", ""),
                     modality="synthesised", addressed_to=u.get("addressed_to", "learner"),
                     exchange_id=exchange, tactic=result.get("tactic"),
                     phase=stage, turn_number=result.get("turn"),
-                    emotion=u.get("emotion")))
+                    emotion=u.get("emotion"),
+                    decision_trace=result.get("trace") if i == 0 else None))
         seq += 1
 
     # Sync the structured claims the post-session assessment reads. Keyed by

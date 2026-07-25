@@ -577,6 +577,16 @@ export default function InterrogationRoom({ interviewId, resume, onExit }: Props
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
+                    <a
+                        href={`/dev/trace/${interviewId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Engine trace — what the engine decided each turn (dev)"
+                        className="text-xs font-mono px-2 py-0.5 rounded"
+                        style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                    >
+                        trace ↗
+                    </a>
                     <span
                         className="text-xs font-mono px-2 py-0.5 rounded"
                         style={{

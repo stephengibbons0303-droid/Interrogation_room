@@ -323,6 +323,7 @@ class InterrogationAgent:
         # Build the timeline once and share it: advance_stage and build_context
         # both need it, over the same claims (ingest does not run until _apply).
         report = build_timeline(self.state.claims)
+        stage_before = self.state.stage           # for the decision trace
         dr.advance_stage(self.state, report)
 
         ctx = dr.build_context(self.state, self.brief, prelim, report=report)
@@ -382,7 +383,8 @@ class InterrogationAgent:
               f"{len(self.history[-14:])} messages of history)")
 
         return self._apply(result, user_message, is_silence, prelim, ctx,
-                           speaker, reason, disclosure, offered_premise, options)
+                           speaker, reason, disclosure, offered_premise, options,
+                           stage_before=stage_before)
 
     def _context_messages(self):
         out = []
@@ -395,8 +397,13 @@ class InterrogationAgent:
 
     def _apply(self, result: TurnOut, user_message: str, is_silence: bool,
                prelim, ctx, speaker: str, reason: str, disclosure,
-               offered_premise=None, options=None) -> Dict[str, Any]:
+               offered_premise=None, options=None, stage_before=None) -> Dict[str, Any]:
         """Fold the model's reply back into engine state."""
+        # Snapshot the jeopardy meters BEFORE any of this turn's updates, for the
+        # decision trace's before -> after (the admin engine-trace view).
+        pre = {"pressure": round(self.state.pressure, 3),
+               "exculpation": round(self.state.exculpation, 3),
+               "chen_stance": self.state.chen_stance}
         # Strip any "[Name]:" label the model copied from its own fed-back history
         # before anything downstream reads the text (bubble, TTS, re-feed).
         for u in result.utterances:
@@ -501,6 +508,42 @@ class InterrogationAgent:
         if not is_silence:
             self._remember(user_message)
 
+        new_claims = self.state.claims[claims_before:]
+        # The per-turn decision trace: what the engine decided and why, exposed for
+        # the admin engine-trace view. Purely observational - it reads state, never
+        # changes it - and JSON-serialisable so it can be persisted on the turn row.
+        trace = {
+            "turn": self.state.turn,
+            "silence": is_silence,
+            "stage": self.state.stage,
+            "stage_advanced_from": stage_before if stage_before != self.state.stage else None,
+            "speaker": speaker,
+            "handoff_reason": reason,
+            "shortlist": [{"id": t.id, "weight": t.weight,
+                           "chosen": t.id == result.tactic_used} for t in (options or [])],
+            "tactic": result.tactic_used,
+            "aside": is_aside,
+            "disclosure": ({"evidence_id": disclosure[0], "level": disclosure[1]}
+                           if disclosure else None),
+            "responsive": True if is_silence else result.responsive,
+            "claims_added": len(new_claims),
+            "claims_episodic": sum(1 for c in new_claims if c.episodic),
+            "contradictions_new": [c.kind for c in new_contradictions],
+            "pressure": {"before": pre["pressure"], "after": round(self.state.pressure, 3)},
+            "exculpation": {"before": pre["exculpation"],
+                            "after": round(self.state.exculpation, 3)},
+            "chen": {"before": pre["chen_stance"], "after": self.state.chen_stance},
+            "sting": stung,
+            "evasions": self.state.evasions,
+            "flags": {
+                "phone_probed": self.state.phone_probed,
+                "phone_reminder_spent": self.state.phone_reminder_spent,
+                "premise_open": self.state.premise_open is not None,
+                "retelling_active": self.state.retelling_active,
+            },
+            "outcome": self.state.outcome,
+        }
+
         return {
             "utterances": [{"speaker": u.speaker, "text": u.text.strip(),
                             "addressed_to": u.addressed_to,
@@ -513,6 +556,7 @@ class InterrogationAgent:
             "sting": stung,
             "outcome": self.state.outcome,
             "turn": self.state.turn,
+            "trace": trace,
         }
 
     @staticmethod
