@@ -157,6 +157,10 @@ class Turn(Base):
     phase = Column(String(50), nullable=True)
     turn_number = Column(Integer, nullable=True)
     emotion = Column(String(50), nullable=True)
+    # The engine's per-turn decision trace (what it decided and why), set once per
+    # exchange on the first agent row. Read only by the admin engine-trace view;
+    # nullable so a silence turn, a user row, or an older row simply has none.
+    decision_trace = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=_now)
 
     interview = relationship("Interview", back_populates="turns")
@@ -222,6 +226,7 @@ _ADDED_COLUMNS = {
         "addressed_to": "VARCHAR(20)",
         "exchange_id": "VARCHAR(36)",
         "tactic": "VARCHAR(50)",
+        "decision_trace": "JSON",
     },
     "claims": {
         "place": "VARCHAR(255)",

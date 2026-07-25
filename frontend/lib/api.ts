@@ -67,6 +67,39 @@ export interface ChatReply {
     tactic?: string | null;
 }
 
+/** The engine's per-turn decision trace - what it decided each turn and why.
+ *  Free-form on the wire; this mirrors what agent._apply emits. For the dev
+ *  engine-trace view only. */
+export interface TraceEntry {
+    turn: number;
+    silence: boolean;
+    stage: string;
+    /** The stage it advanced FROM this turn, or null if it held. */
+    stage_advanced_from: string | null;
+    speaker: string;
+    handoff_reason: string;
+    shortlist: { id: string; weight: number; chosen: boolean }[];
+    tactic: string;
+    aside: boolean;
+    disclosure: { evidence_id: string; level: string } | null;
+    responsive: boolean;
+    claims_added: number;
+    claims_episodic: number;
+    contradictions_new: string[];
+    pressure: { before: number; after: number };
+    exculpation: { before: number; after: number };
+    chen: { before: string; after: string };
+    sting: boolean;
+    evasions: number;
+    flags: {
+        phone_probed: boolean;
+        phone_reminder_spent: boolean;
+        premise_open: boolean;
+        retelling_active: boolean;
+    };
+    outcome: string | null;
+}
+
 /** One half of the pair the learner has to work around. A `denial` is a fact to
  *  keep out of the account; a `substitution` is the hole that leaves, which has
  *  to be filled in and then held identical every time it is revisited. */
@@ -199,6 +232,7 @@ export const listInterviews = () => request<InterviewSummary[]>('/interviews');
 export const getBrief = (id: string) => request<Brief>(`/interviews/${id}/brief`);
 export const createInterview = () => request<InterviewSummary>('/interviews', { method: 'POST' });
 export const getInterview = (id: string) => request<InterviewDetail>(`/interviews/${id}`);
+export const getTrace = (id: string) => request<TraceEntry[]>(`/interviews/${id}/trace`);
 export const deleteInterview = (id: string) =>
     request<void>(`/interviews/${id}`, { method: 'DELETE' });
 
