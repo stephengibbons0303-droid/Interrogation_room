@@ -197,3 +197,45 @@ These three commits have **not** been through it. Per CLAUDE.md, before merging 
 
 _Housekeeping: entries above are stamped 2026-07-24 but today is 2026-07-25 (off by
 one, cosmetic). Fix only if it bothers you._
+
+---
+
+## 2026-07-25 (session 2) — Engine visualization; branch is merge-ready
+
+**State: everything committed, working tree clean.** Branch
+`claude/interrogation-repo-diff-0372f1` is **5 ahead of `main`, 0 behind**. The
+pre-merge review gate for this batch is **done** — it is ready to merge.
+
+### What landed on the branch (unmerged)
+- `30f2f83` `backend/scripts/engine_map.py` — read-only introspection of the tactic
+  registry + stage machine. CLI report: `python scripts/engine_map.py`.
+- `7e1a3c5` `documents/engine-map.md` — a generated Mermaid map (per-turn pipeline,
+  PEACE machine, speaker ladder, verdict tree, Chen's arc, + tactic matrix / gates /
+  coverage). Regenerate: `cd backend && python scripts/engine_map.py md > ../documents/engine-map.md`.
+- `d36ff82` README "Engine reference" pointer to the map + design notes.
+- `ecf1798` the **live engine trace**: the engine emits a per-turn decision log
+  (`agent._apply`), persisted (`Turn.decision_trace` + migration), served at
+  `GET /interviews/{id}/trace`, rendered at the dev route `/dev/trace/[id]`
+  (linked from the interrogation-room header via `trace ↗`).
+- `a8d7779` review gate — `/code-review` medium + `/simplify`: fixed the `get_trace`
+  query; recorded the top finding in `TECH_DEBT.md`; two minor findings skipped.
+
+259 engine tests pass; endpoints verified via TestClient; frontend typechecks.
+
+### Do next
+1. **(optional, worth it) try the trace view live** — it was never rendered against a
+   real played session. Start backend (8013) + frontend (5185), log in, play a few
+   turns, click `trace ↗`. Fix anything that looks off.
+2. **Merge to `main` + push**, the established way: from the primary worktree
+   `C:/Users/gibwo/Interrogation_room`, `git merge --no-ff claude/interrogation-repo-diff-0372f1`,
+   `git push origin main`, then fast-forward the branch back up to `main`.
+
+### Outstanding / deferred
+- **`TECH_DEBT.md`** — role-gate `GET /interviews/{id}/trace` and the `/dev/trace`
+  route before any deployment; a learner can currently fetch their own engine
+  internals, which breaks the "hidden pedagogy" design.
+- **Trace v2 ideas** — a live-append view that consumes `ChatResponse.trace`; the
+  "why gated" panel (needs the engine to emit filtered-tactic reasons); an admin
+  landing page listing interviews + a real `role == admin` gate.
+- **Still open from before** — mic never tested end to end; TTS has no streaming;
+  post-session KLP assessment deferred.
