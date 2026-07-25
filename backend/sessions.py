@@ -278,8 +278,13 @@ def get_trace(interview_id: str, user: User = Depends(get_current_user),
     scoped for now; role-gate it before exposing engine internals in a real
     deployment. One trace per exchange - silence and user rows carry none.
     """
-    iv = _owned(interview_id, user, db)
-    return [t.decision_trace for t in iv.turns if t.decision_trace is not None]
+    _owned(interview_id, user, db)                 # ownership check / 404 only
+    rows = (db.query(Turn.decision_trace)
+              .filter(Turn.interview_id == interview_id,
+                      Turn.decision_trace.isnot(None))
+              .order_by(Turn.seq)
+              .all())
+    return [r[0] for r in rows]
 
 
 @router.delete("/{interview_id}", status_code=204)
